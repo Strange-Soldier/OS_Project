@@ -1,0 +1,8 @@
+page replacement me page number dikhne chahiye
+
+
+in comparison , add remarks stuff
+also in comparison, unique or highest values should be highlited
+
+
+start with default TQ=2 for RR
