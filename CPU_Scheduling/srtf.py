@@ -1,158 +1,110 @@
-# SRTF Scheduling - handles both cases (with I/O and without I/O)
-
 n = int(input("Enter number of processes: "))
 
-has_io = input("Does this system have I/O bursts? (y/n): ").strip().lower() == "y"
-
-process = []
-arrival = []
-cpu1 = []
-io = []
-cpu2 = []
+pid = []
+at = []
+bt = []
 
 for i in range(n):
-    print("\nProcess", i + 1)
+    print("\nEnter details for process", i + 1)
+    pid.append(input("Enter PID: "))
+    at.append(int(input("Enter Arrival Time: ")))
+    bt.append(int(input("Enter Burst Time: ")))
 
-    at = int(input("Enter Arrival Time: "))
+remaining = bt.copy()
 
-    if has_io:
-        b1 = int(input("Enter First CPU Burst: "))
-        ib = int(input("Enter I/O Burst: "))
-        b2 = int(input("Enter Second CPU Burst: "))
-    else:
-        b1 = int(input("Enter Burst Time: "))
-        ib = 0
-        b2 = 0
+st = [-1] * n
+ct = [0] * n
+tat = [0] * n
+wt = [0] * n
+rt = [0] * n
 
-    process.append(i + 1)
-    arrival.append(at)
-    cpu1.append(b1)
-    io.append(ib)
-    cpu2.append(b2)
-
-remaining1 = cpu1.copy()
-remaining2 = cpu2.copy()
-
-# state: 0 = waiting for first CPU, 1 = doing I/O, 2 = waiting for second CPU, 3 = completed
-state = [0] * n
-io_end = [0] * n
-
-completion = [0] * n
-first_response = [-1] * n
+done = [0] * n
 
 time = 0
-completed = 0
+count = 0
 
-while completed < n:
+print("\nExecution")
 
-    # move processes from I/O back to ready queue
-    for i in range(n):
-        if state[i] == 1 and time >= io_end[i]:
+while count < n:
 
-            if remaining2[i] > 0:
-                state[i] = 2
-            else:
-                # nothing left after I/O - process is done
-                completion[i] = time
-                state[i] = 3
-                completed += 1
+    small = -1
 
-    shortest = -1
-
-    # find the process with the shortest remaining CPU burst
     for i in range(n):
 
-        if arrival[i] <= time and state[i] != 3:
+        if done[i] == 0 and at[i] <= time and remaining[i] > 0:
 
-            if state[i] == 0 and remaining1[i] > 0:
-                if shortest == -1 or remaining1[i] < remaining1[shortest]:
-                    shortest = i
+            if small == -1:
+                small = i
 
-            elif state[i] == 2 and remaining2[i] > 0:
-                if shortest == -1 or remaining2[i] < remaining2[shortest]:
-                    shortest = i
+            elif remaining[i] < remaining[small]:
+                small = i
 
-    if shortest == -1:
-        time += 1
+    if small == -1:
+        time = time + 1
         continue
 
-    if first_response[shortest] == -1:
-        first_response[shortest] = time - arrival[shortest]
+    if st[small] == -1:
+        st[small] = time
+        rt[small] = st[small] - at[small]
 
-    if state[shortest] == 0:
+    remaining[small] = remaining[small] - 1
+    time = time + 1
 
-        remaining1[shortest] -= 1
-        time += 1
-
-        # first CPU burst finished
-        if remaining1[shortest] == 0:
-
-            if io[shortest] > 0:
-                state[shortest] = 1
-                io_end[shortest] = time + io[shortest]
-
-            elif cpu2[shortest] > 0:
-                state[shortest] = 2
-
-            else:
-                # no I/O and no second burst - process is done right here
-                completion[shortest] = time
-                state[shortest] = 3
-                completed += 1
-
-    elif state[shortest] == 2:
-
-        remaining2[shortest] -= 1
-        time += 1
-
-        # second CPU burst finished
-        if remaining2[shortest] == 0:
-            completion[shortest] = time
-            state[shortest] = 3
-            completed += 1
-
-
-# ---- results ----
-
-total_tat = 0
-total_wt = 0
-total_rt = 0
-
-if has_io:
-
-    print("\nProcess\tAT\tCPU1\tIO\tCPU2\tCT\tRT\tTAT\tWT")
+    print("\nTime =", time)
+    print("Ready Queue:", end=" ")
 
     for i in range(n):
+        if done[i] == 0 and at[i] <= time and remaining[i] > 0:
+            if i != small:
+                print(pid[i], end=" ")
 
-        total_cpu = cpu1[i] + cpu2[i]
-        turnaround = completion[i] - arrival[i]
-        waiting = turnaround - total_cpu - io[i]
+    print()
+    print("Running:", pid[small])
+    print("Bal:", remaining[small])
 
-        print(process[i], "\t", arrival[i], "\t", cpu1[i],
-              "\t", io[i], "\t", cpu2[i], "\t", completion[i],
-              "\t", first_response[i], "\t", turnaround, "\t", waiting)
+    if remaining[small] == 0:
 
-        total_tat += turnaround
-        total_wt += waiting
-        total_rt += first_response[i]
+        ct[small] = time
+        tat[small] = ct[small] - at[small]
+        wt[small] = tat[small] - bt[small]
 
-else:
+        done[small] = 1
+        count = count + 1
 
-    print("\nProcess\tAT\tBT\tCT\tTAT\tWT\tRT")
+print("\n")
+print("PID\tAT\tBT\tST\tCT\tTAT\tWT\tRT")
 
-    for i in range(n):
+for i in range(n):
+    print(pid[i], "\t", at[i], "\t", bt[i], "\t", st[i],
+          "\t", ct[i], "\t", tat[i], "\t", wt[i], "\t", rt[i])
 
-        turnaround = completion[i] - arrival[i]
-        waiting = turnaround - cpu1[i]
+sum_bt = sum(bt)
+sum_ct = sum(ct)
+sum_tat = sum(tat)
+sum_wt = sum(wt)
+sum_rt = sum(rt)
 
-        print(process[i], "\t", arrival[i], "\t", cpu1[i],
-              "\t", completion[i], "\t", turnaround,
-              "\t", waiting, "\t", first_response[i])
+avg_bt = round(sum_bt / n, 2)
+avg_ct = round(sum_ct / n, 2)
+avg_tat = round(sum_tat / n, 2)
+avg_wt = round(sum_wt / n, 2)
+avg_rt = round(sum_rt / n, 2)
 
-        total_tat += turnaround
-        total_wt += waiting
-        total_rt += first_response[i]
+print("\nSum")
+print("BT =", sum_bt)
+print("CT =", sum_ct)
+print("TAT =", sum_tat)
+print("WT =", sum_wt)
+print("RT =", sum_rt)
 
-print("\nAverage Turnaround Time =", total_tat / n)
-print("Average Waiting Time =", total_wt / n)
-print("Average Response Time =", total_rt / n)
+print("\nAverage")
+print("BT =", avg_bt)
+print("CT =", avg_ct)
+print("TAT =", avg_tat)
+print("WT =", avg_wt)
+print("RT =", avg_rt)
+
+print("\nAverage CT  =", avg_ct)
+print("Average TAT =", avg_tat)
+print("Average WT  =", avg_wt)
+print("Average RT  =", avg_rt)
