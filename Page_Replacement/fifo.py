@@ -1,7 +1,7 @@
 # FIFO Page Replacement
 
-pages = [7, 0, 1, 2, 0, 3, 0, 4, 2, 3]
-frame_size = 3
+pages = list(map(int, input("Enter the page reference string (space separated): ").split()))
+frame_size = int(input("Enter the number of frames: "))
 
 frames = []
 hits = 0
