@@ -1,195 +1,123 @@
-# Round Robin Scheduling - handles both cases (with I/O and without I/O)
-
 n = int(input("Enter number of processes: "))
 
-has_io = input("Does this system have I/O bursts? (y/n): ").strip().lower() == "y"
-
-process = []
-arrival = []
-cpu1 = []
-io = []
-cpu2 = []
+pid = []
+at = []
+bt = []
 
 for i in range(n):
-    print("\nProcess", i + 1)
+    print("\nEnter details for process", i + 1)
+    pid.append(input("Enter PID: "))
+    at.append(int(input("Enter Arrival Time: ")))
+    bt.append(int(input("Enter Burst Time: ")))
 
-    at = int(input("Enter Arrival Time: "))
+tq = int(input("\nEnter Time Quantum (Enter 2 for default): "))
 
-    if has_io:
-        b1 = int(input("Enter First CPU Burst: "))
-        ib = int(input("Enter I/O Burst: "))
-        b2 = int(input("Enter Second CPU Burst: "))
-    else:
-        b1 = int(input("Enter Burst Time: "))
-        ib = 0
-        b2 = 0
+if tq <= 0:
+    tq = 2
 
-    process.append(i + 1)
-    arrival.append(at)
-    cpu1.append(b1)
-    io.append(ib)
-    cpu2.append(b2)
+remaining = bt.copy()
 
-quantum = int(input("\nEnter Time Quantum: "))
+st = [-1] * n
+ct = [0] * n
+tat = [0] * n
+wt = [0] * n
+rt = [0] * n
 
-remaining1 = cpu1.copy()
-remaining2 = cpu2.copy()
-
-# state: 0 = doing first CPU burst, 1 = doing I/O, 2 = doing second CPU burst, 3 = done
-state = [0] * n
-io_end = [0] * n
-completion = [0] * n
-response = [-1] * n
+done = [0] * n
 
 queue = []
 time = 0
-completed = 0
+count = 0
 
-for i in range(n):
-    if arrival[i] == 0:
-        queue.append(i)
+print("\nExecution")
 
-while completed < n:
+while count < n:
 
-    # move anyone whose I/O has finished back into the ready queue
     for i in range(n):
-        if state[i] == 1 and time >= io_end[i]:
-            state[i] = 2
-            queue.append(i)
+        if at[i] <= time and done[i] == 0 and i not in queue:
+            if remaining[i] > 0:
+                queue.append(i)
 
     if len(queue) == 0:
-
-        next_time = -1
-
-        for i in range(n):
-
-            if state[i] == 0 and remaining1[i] > 0:
-                if next_time == -1 or arrival[i] < next_time:
-                    next_time = arrival[i]
-
-            elif state[i] == 1:
-                if next_time == -1 or io_end[i] < next_time:
-                    next_time = io_end[i]
-
-        time = next_time
-
-        for i in range(n):
-
-            if state[i] == 0 and arrival[i] <= time:
-                if i not in queue:
-                    queue.append(i)
-
-            elif state[i] == 1 and io_end[i] <= time:
-                state[i] = 2
-                if i not in queue:
-                    queue.append(i)
+        time = time + 1
+        continue
 
     current = queue.pop(0)
 
-    if response[current] == -1:
-        response[current] = time - arrival[current]
+    if st[current] == -1:
+        st[current] = time
+        rt[current] = st[current] - at[current]
 
-    if state[current] == 0:
+    run = 0
 
-        run_time = min(quantum, remaining1[current])
+    while run < tq and remaining[current] > 0:
 
-        start_time = time
-        remaining1[current] -= run_time
-        time += run_time
-
-        # anyone who arrived while we were running joins the queue now
-        for i in range(n):
-            if i != current and state[i] == 0 and remaining1[i] > 0:
-                if arrival[i] > start_time and arrival[i] <= time:
-                    if i not in queue:
-                        queue.append(i)
-
-        # a process on I/O might have finished while we were running
-        for i in range(n):
-            if state[i] == 1 and io_end[i] <= time:
-                state[i] = 2
-                queue.append(i)
-
-        if remaining1[current] == 0:
-
-            if io[current] > 0:
-                state[current] = 1
-                io_end[current] = time + io[current]
-
-            elif cpu2[current] > 0:
-                state[current] = 2
-                queue.append(current)
-
-            else:
-                # no I/O and no second burst - process is done right here
-                completion[current] = time
-                state[current] = 3
-                completed += 1
-
-        else:
-            queue.append(current)
-
-    elif state[current] == 2:
-
-        run_time = min(quantum, remaining2[current])
-
-        remaining2[current] -= run_time
-        time += run_time
+        remaining[current] = remaining[current] - 1
+        time = time + 1
+        run = run + 1
 
         for i in range(n):
-            if state[i] == 1 and io_end[i] <= time:
-                state[i] = 2
-                queue.append(i)
+            if at[i] <= time and done[i] == 0 and i != current:
+                if remaining[i] > 0 and i not in queue:
+                    queue.append(i)
 
-        if remaining2[current] == 0:
-            completion[current] = time
-            state[current] = 3
-            completed += 1
-        else:
-            queue.append(current)
+    print("\nTime =", time)
+    print("Ready Queue:", end=" ")
 
+    for i in queue:
+        print(pid[i], end=" ")
 
-# ---- results ----
+    print()
+    print("Running:", pid[current])
+    print("Bal:", remaining[current])
 
-total_tat = 0
-total_wt = 0
-total_rt = 0
+    if remaining[current] == 0:
 
-if has_io:
+        ct[current] = time
+        tat[current] = ct[current] - at[current]
+        wt[current] = tat[current] - bt[current]
 
-    print("\nProcess\tAT\tCPU1\tIO\tCPU2\tCT\tRT\tTAT\tWT")
+        done[current] = 1
+        count = count + 1
 
-    for i in range(n):
+    else:
+        queue.append(current)
 
-        total_cpu = cpu1[i] + cpu2[i]
-        turnaround = completion[i] - arrival[i]
-        waiting = turnaround - total_cpu - io[i]
+print("\n")
+print("PID\tAT\tBT\tST\tCT\tTAT\tWT\tRT\tTQ")
 
-        print(process[i], "\t", arrival[i], "\t", cpu1[i],
-              "\t", io[i], "\t", cpu2[i], "\t", completion[i],
-              "\t", response[i], "\t", turnaround, "\t", waiting)
+for i in range(n):
+    print(pid[i], "\t", at[i], "\t", bt[i], "\t", st[i],
+          "\t", ct[i], "\t", tat[i], "\t", wt[i],
+          "\t", rt[i], "\t", tq)
 
-        total_tat += turnaround
-        total_wt += waiting
-        total_rt += response[i]
+sum_bt = sum(bt)
+sum_ct = sum(ct)
+sum_tat = sum(tat)
+sum_wt = sum(wt)
+sum_rt = sum(rt)
 
-else:
+avg_bt = round(sum_bt / n, 2)
+avg_ct = round(sum_ct / n, 2)
+avg_tat = round(sum_tat / n, 2)
+avg_wt = round(sum_wt / n, 2)
+avg_rt = round(sum_rt / n, 2)
 
-    print("\nProcess\tAT\tBT\tCT\tTAT\tWT\tRT")
+print("\nSum")
+print("BT =", sum_bt)
+print("CT =", sum_ct)
+print("TAT =", sum_tat)
+print("WT =", sum_wt)
+print("RT =", sum_rt)
 
-    for i in range(n):
+print("\nAverage")
+print("BT =", avg_bt)
+print("CT =", avg_ct)
+print("TAT =", avg_tat)
+print("WT =", avg_wt)
+print("RT =", avg_rt)
 
-        turnaround = completion[i] - arrival[i]
-        waiting = turnaround - cpu1[i]
-
-        print(process[i], "\t", arrival[i], "\t", cpu1[i],
-              "\t", completion[i], "\t", turnaround,
-              "\t", waiting, "\t", response[i])
-
-        total_tat += turnaround
-        total_wt += waiting
-        total_rt += response[i]
-
-print("\nAverage Turnaround Time =", total_tat / n)
-print("Average Waiting Time =", total_wt / n)
-print("Average Response Time =", total_rt / n)
+print("\nAverage CT  =", avg_ct)
+print("Average TAT =", avg_tat)
+print("Average WT  =", avg_wt)
+print("Average RT  =", avg_rt)
