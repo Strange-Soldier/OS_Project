@@ -19,10 +19,7 @@ bal = []
 for i in range(n):
     bal.append(bt[i] - io_at[i])
 
-first_remaining = io_at.copy()
-second_remaining = bal.copy()
-
-st = [-1] * n
+st = [0] * n
 ct = [0] * n
 tat = [0] * n
 wt = [0] * n
@@ -32,7 +29,8 @@ first_ct = [0] * n
 new_at = [0] * n
 new_bt = bal.copy()
 
-state = [0] * n
+done_first = [0] * n
+done_second = [0] * n
 
 time = 0
 count = 0
@@ -44,99 +42,77 @@ while count < n:
     small = -1
 
     for i in range(n):
-
-        if state[i] == 0 and at[i] <= time and first_remaining[i] > 0:
-
-            if small == -1:
-                small = i
-
-            elif first_remaining[i] < first_remaining[small]:
-                small = i
-
-        elif state[i] == 2 and new_at[i] <= time and second_remaining[i] > 0:
+        if done_first[i] == 0 and at[i] <= time:
 
             if small == -1:
                 small = i
 
-            elif second_remaining[i] < second_remaining[small]:
+            elif io_at[i] < io_at[small]:
                 small = i
 
     if small == -1:
-        time = time + 1
-
         for i in range(n):
-            if state[i] == 1 and new_at[i] <= time:
-                state[i] = 2
+            if done_first[i] == 1 and done_second[i] == 0:
+                if new_at[i] <= time:
+                    if small == -1:
+                        small = i
+                    elif new_bt[i] < new_bt[small]:
+                        small = i
 
+    if small == -1:
+        time = time + 1
         continue
 
-    if st[small] == -1:
+    if done_first[small] == 0:
+
         st[small] = time
         rt[small] = st[small] - at[small]
 
-    if state[small] == 0:
-
-        first_remaining[small] = first_remaining[small] - 1
-        time = time + 1
-
         print("\nTime =", time)
         print("Ready Queue:", end=" ")
 
         for i in range(n):
-            if i != small:
-                if state[i] == 0 and at[i] <= time and first_remaining[i] > 0:
-                    print(pid[i], end=" ")
-
-                elif state[i] == 2 and new_at[i] <= time and second_remaining[i] > 0:
-                    print(pid[i], end=" ")
+            if done_first[i] == 0 and at[i] <= time and i != small:
+                print(pid[i], end=" ")
 
         print()
         print("Running:", pid[small])
-        print("Bal:", first_remaining[small])
 
-        if first_remaining[small] == 0:
+        time = time + io_at[small]
 
-            first_ct[small] = time
-            new_at[small] = first_ct[small] + io_dur[small]
+        print("Bal:", 0)
 
-            state[small] = 1
+        first_ct[small] = time
+        new_at[small] = first_ct[small] + io_dur[small]
 
-            print("I/O Queue:", pid[small])
-            print("I/O Start:", first_ct[small])
-            print("I/O End:", new_at[small])
+        done_first[small] = 1
+
+        print("I/O Queue:", pid[small])
+        print("I/O Start:", first_ct[small])
+        print("I/O End:", new_at[small])
 
     else:
 
-        second_remaining[small] = second_remaining[small] - 1
-        time = time + 1
-
         print("\nTime =", time)
         print("Ready Queue:", end=" ")
 
         for i in range(n):
-            if i != small:
-                if state[i] == 0 and at[i] <= time and first_remaining[i] > 0:
-                    print(pid[i], end=" ")
-
-                elif state[i] == 2 and new_at[i] <= time and second_remaining[i] > 0:
+            if done_first[i] == 1 and done_second[i] == 0:
+                if new_at[i] <= time and i != small:
                     print(pid[i], end=" ")
 
         print()
         print("Running:", pid[small])
-        print("Bal:", second_remaining[small])
+        print("Bal:", new_bt[small])
 
-        if second_remaining[small] == 0:
+        time = time + new_bt[small]
 
-            ct[small] = time
-            tat[small] = ct[small] - at[small]
-            wt[small] = tat[small] - bt[small]
+        ct[small] = time
+        tat[small] = ct[small] - at[small]
+        wt[small] = tat[small] - bt[small]
 
-            state[small] = 3
-            count = count + 1
-
-    for i in range(n):
-        if state[i] == 1 and new_at[i] <= time:
-            state[i] = 2
+        done_second[small] = 1
+        count = count + 1
 
 print("\n")
 print("PID\tAT\tBT\tI/Oat\tI/Odur\tBal\tST\tCT\tPID'\tNew AT\tNew BT\tTAT\tWT\tRT")
