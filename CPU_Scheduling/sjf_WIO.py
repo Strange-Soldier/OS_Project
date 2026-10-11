@@ -1,155 +1,216 @@
-n = int(input("Enter number of processes: "))
+# SJF CPU Scheduling WITH I/O (non-preemptive, shortest burst first)
+# Each process runs a first CPU burst, then does I/O, then runs the rest.
 
-pid = []
-at = []
-bt = []
-io_at = []
-io_dur = []
+# build_result() turns the raw run information into the dictionary the GUI
+# wants.  It is the same helper used in every scheduling file.
+def build_result(pids, at, bt, ct, tat, wt, rt, run, io):
 
-for i in range(n):
-    print("\nEnter details for process", i + 1)
-    pid.append(input("Enter PID: "))
-    at.append(int(input("Enter Arrival Time: ")))
-    bt.append(int(input("Enter Burst Time: ")))
-    io_at.append(int(input("Enter I/O after CPU time: ")))
-    io_dur.append(int(input("Enter I/O Duration: ")))
+    end_time = 0
+    for pid in pids:
+        if ct[pid] > end_time:
+            end_time = ct[pid]
 
-bal = []
+    timeline = []
+    io_timeline = []
+    for t in range(end_time):
+        timeline.append(run.get(t, None))
+        io_timeline.append(io.get(t, []))
 
-for i in range(n):
-    bal.append(bt[i] - io_at[i])
+    # Gantt chart: join neighbouring ticks of the same process
+    gantt = []
+    for t in range(end_time):
+        pid = timeline[t]
+        if pid is None:
+            continue
+        if gantt and gantt[-1][0] == pid and gantt[-1][2] == t:
+            gantt[-1][2] = t + 1
+        else:
+            gantt.append([pid, t, t + 1])
+    gantt = [(g[0], g[1], g[2]) for g in gantt]
 
-st = [0] * n
-ct = [0] * n
-tat = [0] * n
-wt = [0] * n
-rt = [0] * n
+    # Snapshots: one picture of the system per tick
+    snapshots = []
+    for t in range(end_time):
+        running = timeline[t]
+        blocked = io_timeline[t]
+        ready = []
+        for pid in pids:
+            if at[pid] <= t and ct[pid] > t:
+                if pid != running and pid not in blocked:
+                    ready.append(pid)
+        if running is not None:
+            event = running + " running"
+        else:
+            event = "CPU idle"
+        snapshots.append({"t": t, "event": event, "running": running,
+                          "ready": ready, "blocked": list(blocked)})
 
-first_ct = [0] * n
-new_at = [0] * n
-new_bt = bal.copy()
+    # Context switches
+    context_switches = 0
+    last = None
+    for seg in gantt:
+        pid = seg[0]
+        if last is not None and pid != last:
+            context_switches = context_switches + 1
+        last = pid
 
-done_first = [0] * n
-done_second = [0] * n
+    # Average metrics
+    n = len(pids)
+    avg_wt = round(sum(wt[p] for p in pids) / n, 2)
+    avg_tat = round(sum(tat[p] for p in pids) / n, 2)
+    avg_rt = round(sum(rt[p] for p in pids) / n, 2)
+    avg_ct = round(sum(ct[p] for p in pids) / n, 2)
 
-time = 0
-count = 0
-
-print("\nExecution")
-
-while count < n:
-
-    small = -1
-
-    for i in range(n):
-        if done_first[i] == 0 and at[i] <= time:
-
-            if small == -1:
-                small = i
-
-            elif io_at[i] < io_at[small]:
-                small = i
-
-    if small == -1:
-        for i in range(n):
-            if done_first[i] == 1 and done_second[i] == 0:
-                if new_at[i] <= time:
-                    if small == -1:
-                        small = i
-                    elif new_bt[i] < new_bt[small]:
-                        small = i
-
-    if small == -1:
-        time = time + 1
-        continue
-
-    if done_first[small] == 0:
-
-        st[small] = time
-        rt[small] = st[small] - at[small]
-
-        print("\nTime =", time)
-        print("Ready Queue:", end=" ")
-
-        for i in range(n):
-            if done_first[i] == 0 and at[i] <= time and i != small:
-                print(pid[i], end=" ")
-
-        print()
-        print("Running:", pid[small])
-
-        time = time + io_at[small]
-
-        print("Bal:", 0)
-
-        first_ct[small] = time
-        new_at[small] = first_ct[small] + io_dur[small]
-
-        done_first[small] = 1
-
-        print("I/O Queue:", pid[small])
-        print("I/O Start:", first_ct[small])
-        print("I/O End:", new_at[small])
-
+    busy = 0
+    for t in range(end_time):
+        if timeline[t] is not None:
+            busy = busy + 1
+    if end_time > 0:
+        cpu_util = round(busy / end_time * 100, 2)
     else:
+        cpu_util = 0.0
 
-        print("\nTime =", time)
-        print("Ready Queue:", end=" ")
+    metrics = {"avg_wt": avg_wt, "avg_tat": avg_tat, "avg_rt": avg_rt,
+               "avg_ct": avg_ct, "cpu_util": cpu_util,
+               "context_switches": context_switches}
 
+    per_process = []
+    for pid in pids:
+        per_process.append({"pid": pid, "ct": ct[pid], "tat": tat[pid],
+                            "wt": wt[pid], "rt": rt[pid]})
+
+    return {"snapshots": snapshots, "gantt": gantt,
+            "metrics": metrics, "per_process": per_process}
+
+
+# simulate() runs SJF with one I/O burst per process.
+#   processes = list of dicts like
+#       {"pid":"P1", "at":0, "bt":5, "io_at":2, "io_dur":2}
+def simulate(processes, time_quantum=None):
+
+    n = len(processes)
+
+    pid = [p["pid"] for p in processes]
+    at = [p["at"] for p in processes]
+    bt = [p["bt"] for p in processes]
+    io_at = [p["io_at"] for p in processes]
+    io_dur = [p["io_dur"] for p in processes]
+
+    bal = []
+    for i in range(n):
+        bal.append(bt[i] - io_at[i])
+
+    st = [0] * n
+    ct = [0] * n
+    tat = [0] * n
+    wt = [0] * n
+    rt = [0] * n
+
+    first_ct = [0] * n
+    new_at = [0] * n
+    new_bt = bal.copy()
+
+    done_first = [0] * n
+    done_second = [0] * n
+
+    run = {}
+    io = {}
+
+    time = 0
+    count = 0
+
+    while count < n:
+
+        # 1) look for the arrived process with the shortest FIRST burst
+        small = -1
         for i in range(n):
-            if done_first[i] == 1 and done_second[i] == 0:
-                if new_at[i] <= time and i != small:
-                    print(pid[i], end=" ")
+            if done_first[i] == 0 and at[i] <= time:
+                if small == -1:
+                    small = i
+                elif io_at[i] < io_at[small]:
+                    small = i
 
-        print()
-        print("Running:", pid[small])
-        print("Bal:", new_bt[small])
+        # 2) if none, look for a process back from I/O with the shortest second burst
+        if small == -1:
+            for i in range(n):
+                if done_first[i] == 1 and done_second[i] == 0:
+                    if new_at[i] <= time:
+                        if small == -1:
+                            small = i
+                        elif new_bt[i] < new_bt[small]:
+                            small = i
 
-        time = time + new_bt[small]
+        # nobody ready -> CPU idle one tick
+        if small == -1:
+            time = time + 1
+            continue
 
-        ct[small] = time
-        tat[small] = ct[small] - at[small]
-        wt[small] = tat[small] - bt[small]
+        if done_first[small] == 0:
 
-        done_second[small] = 1
-        count = count + 1
+            # --- first CPU burst ---
+            st[small] = time
+            rt[small] = st[small] - at[small]
 
-print("\n")
-print("PID\tAT\tBT\tI/Oat\tI/Odur\tBal\tST\tCT\tPID'\tNew AT\tNew BT\tTAT\tWT\tRT")
+            for t in range(time, time + io_at[small]):
+                run[t] = pid[small]
+            time = time + io_at[small]
 
-for i in range(n):
-    print(pid[i], "\t", at[i], "\t", bt[i], "\t", io_at[i],
-          "\t", io_dur[i], "\t", bal[i], "\t", st[i], "\t",
-          ct[i], "\t", pid[i] + "'", "\t", new_at[i], "\t",
-          new_bt[i], "\t", tat[i], "\t", wt[i], "\t", rt[i])
+            first_ct[small] = time
+            new_at[small] = first_ct[small] + io_dur[small]
+            done_first[small] = 1
 
-sum_bt = sum(bt)
-sum_ct = sum(ct)
-sum_tat = sum(tat)
-sum_wt = sum(wt)
-sum_rt = sum(rt)
+            # --- I/O: process is blocked during its I/O ---
+            for t in range(first_ct[small], new_at[small]):
+                if t not in io:
+                    io[t] = []
+                io[t].append(pid[small])
 
-avg_bt = round(sum_bt / n, 2)
-avg_ct = round(sum_ct / n, 2)
-avg_tat = round(sum_tat / n, 2)
-avg_wt = round(sum_wt / n, 2)
-avg_rt = round(sum_rt / n, 2)
+        else:
 
-print("\nSum")
-print("BT =", sum_bt)
-print("CT =", sum_ct)
-print("TAT =", sum_tat)
-print("WT =", sum_wt)
-print("RT =", sum_rt)
+            # --- second CPU burst ---
+            for t in range(time, time + new_bt[small]):
+                run[t] = pid[small]
+            time = time + new_bt[small]
 
-print("\nAverage")
-print("BT =", avg_bt)
-print("CT =", avg_ct)
-print("TAT =", avg_tat)
-print("WT =", avg_wt)
-print("RT =", avg_rt)
+            ct[small] = time
+            tat[small] = ct[small] - at[small]
+            wt[small] = tat[small] - bt[small]
 
-print("\nAverage CT  =", avg_ct)
-print("Average TAT =", avg_tat)
-print("Average WT  =", avg_wt)
-print("Average RT  =", avg_rt)
+            done_second[small] = 1
+            count = count + 1
+
+    at_d = {}; bt_d = {}; ct_d = {}; tat_d = {}; wt_d = {}; rt_d = {}
+    for i in range(n):
+        at_d[pid[i]] = at[i]; bt_d[pid[i]] = bt[i]; ct_d[pid[i]] = ct[i]
+        tat_d[pid[i]] = tat[i]; wt_d[pid[i]] = wt[i]; rt_d[pid[i]] = rt[i]
+
+    return build_result(pid, at_d, bt_d, ct_d, tat_d, wt_d, rt_d, run, io)
+
+
+# Old interactive program kept for direct runs; skipped when imported.
+if __name__ == "__main__":
+
+    n = int(input("Enter number of processes: "))
+    procs = []
+    for i in range(n):
+        print("\nEnter details for process", i + 1)
+        pid_in = input("Enter PID: ")
+        at_in = int(input("Enter Arrival Time: "))
+        bt_in = int(input("Enter Burst Time: "))
+        ioat_in = int(input("Enter I/O after CPU time: "))
+        iodur_in = int(input("Enter I/O Duration: "))
+        procs.append({"pid": pid_in, "at": at_in, "bt": bt_in,
+                      "io_at": ioat_in, "io_dur": iodur_in})
+
+    data = simulate(procs)
+
+    print("\nPID\tCT\tTAT\tWT\tRT")
+    for row in data["per_process"]:
+        print(row["pid"], "\t", row["ct"], "\t", row["tat"],
+              "\t", row["wt"], "\t", row["rt"])
+
+    m = data["metrics"]
+    print("\nAverage CT  =", m["avg_ct"])
+    print("Average TAT =", m["avg_tat"])
+    print("Average WT  =", m["avg_wt"])
+    print("Average RT  =", m["avg_rt"])
