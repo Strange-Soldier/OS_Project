@@ -100,8 +100,14 @@ def attach_cell_editor(tree, editable_columns, on_change=None):
         if not row_id or not col_id:
             return
 
-        col_index = int(col_id.replace("#", "")) - 1
-        col_name = tree["columns"][col_index]
+        # "#2" means the 2nd VISIBLE column, so look it up in the shown list
+        shown = tree["displaycolumns"]
+        if not shown or shown[0] == "#all":
+            shown = tree["columns"]
+        pos = int(col_id.replace("#", "")) - 1
+        if pos < 0 or pos >= len(shown):
+            return
+        col_name = shown[pos]
         if col_name not in editable_columns:
             return                                   # this column is read-only
 

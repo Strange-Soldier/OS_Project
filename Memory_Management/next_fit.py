@@ -1,91 +1,72 @@
-n = int(input("Enter number of holes: "))
-
-holes = []
-
-for i in range(n):
-    size = int(input("Enter size of hole " + str(i + 1) + ": "))
-    holes.append(size)
-
-p = int(input("Enter number of processes: "))
-
-processes = []
-
-for i in range(p):
-    size = int(input("Enter size of process P" + str(i + 1) + ": "))
-    processes.append(size)
-
-print()
-
-print("     NEXT FIT:-")
+# Next Fit Memory Allocation
+# Like First Fit, but start searching from where the LAST process was placed.
 
 
-print()
-print("+---------+-------------+")
-print("| Hole    | Size        |")
-print("+---------+-------------+")
+def simulate(blocks, processes):
+    # blocks    = list of block sizes, e.g. [100, 500, 200]
+    # processes = list of dicts like {"pid":"P1", "size":212}
 
-for i in range(n):
-    print("| H" + str(i + 1) + "      | " + str(holes[i]) + " KB" + " " * (7 - len(str(holes[i]))) + "|")
+    free = blocks.copy()
+    taken = [None] * len(blocks)
+    snapshots = []
 
-print("+---------+-------------+")
+    last = 0        # where the next search starts
 
-print()
-print("+---------+-------------+")
-print("| Process | Size        |")
-print("+---------+-------------+")
+    for t in range(len(processes)):
+        p = processes[t]
+        chosen = -1
 
-for i in range(p):
-    print("| P" + str(i + 1) + "      | " + str(processes[i]) + " KB" + " " * (7 - len(str(processes[i]))) + "|")
+        # walk around the blocks once, starting at "last"
+        for step in range(len(free)):
+            i = (last + step) % len(free)
+            if free[i] >= p["size"]:
+                chosen = i
+                break
 
-print("+---------+-------------+")
+        if chosen != -1:
+            free[chosen] = free[chosen] - p["size"]
+            taken[chosen] = p["pid"]
+            last = chosen          # next search starts here
+            result = "OK"
+        else:
+            result = "FAIL"
 
-print()
-print("+---------+--------------+-----------------+-------------+-----------------+")
-print("| Process | Process Size | Allocated Hole  | Hole Before | Remaining Hole  |")
-print("+---------+--------------+-----------------+-------------+-----------------+")
+        snapshots.append({"t": t, "pid": p["pid"], "size": p["size"],
+                          "block": chosen if chosen != -1 else None,
+                          "free": free.copy(), "taken": taken.copy(),
+                          "result": result})
 
-start = 0
+    return build_result(blocks, snapshots)
 
-for i in range(p):
+
+# build_result() makes the summary numbers. Same in all four memory files.
+def build_result(blocks, snapshots):
     allocated = 0
-    count = 0
-    j = start
+    failed = 0
+    for s in snapshots:
+        if s["result"] == "OK":
+            allocated = allocated + 1
+        else:
+            failed = failed + 1
 
-    while count < n:
+    if snapshots:
+        free_left = sum(snapshots[-1]["free"])
+    else:
+        free_left = sum(blocks)
 
-        if holes[j] >= processes[i]:
-            old_size = holes[j]
-            holes[j] = holes[j] - processes[i]
-            allocated = 1
-            start = j
+    return {"blocks": blocks, "snapshots": snapshots,
+            "allocated": allocated, "failed": failed,
+            "free_left": free_left, "total": sum(blocks)}
 
-            process_name = "P" + str(i + 1)
-            process_size = str(processes[i]) + " KB"
-            hole_name = "H" + str(j + 1)
-            hole_size = str(old_size) + " KB"
-            remaining = str(holes[j]) + " KB"
 
-            print("| " + process_name + " " * (8 - len(process_name)) +
-                  "| " + process_size + " " * (13 - len(process_size)) +
-                  "| " + hole_name + " " * (16 - len(hole_name)) +
-                  "| " + hole_size + " " * (12 - len(hole_size)) +
-                  "| " + remaining + " " * (16 - len(remaining)) + "|")
+if __name__ == "__main__":
+    blocks = list(map(int, input("Enter block sizes (space separated): ").split()))
+    sizes = list(map(int, input("Enter process sizes (space separated): ").split()))
+    procs = [{"pid": "P%d" % (i + 1), "size": s} for i, s in enumerate(sizes)]
 
-            break
-
-        j = j + 1
-
-        if j == n:
-            j = 0
-
-        count = count + 1
-
-    if allocated == 0:
-        process_name = "P" + str(i + 1)
-        process_size = str(processes[i]) + " KB"
-
-        print("| " + process_name + " " * (8 - len(process_name)) +
-              "| " + process_size + " " * (13 - len(process_size)) +
-              "| Not Allocated   | -           | -               |")
-
-print("+---------+--------------+-----------------+-------------+-----------------+")
+    data = simulate(blocks, procs)
+    for s in data["snapshots"]:
+        where = "Block %d" % (s["block"] + 1) if s["block"] is not None else "Not Allocated"
+        print(s["pid"], "(", s["size"], ") ->", where)
+    print("\nAllocated:", data["allocated"], " Failed:", data["failed"])
+    print("Free left:", data["free_left"], "of", data["total"])

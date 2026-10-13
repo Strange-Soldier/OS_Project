@@ -7,17 +7,16 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "CPU_Scheduling"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import fcfs, sjf, srtf, rr, priority
-import fcfs_WIO, sjf_WIO, srtf_wIO, rr_wIO, priority_WIO
+import fcfs, sjf, srtf, rr
+import fcfs_WIO, sjf_WIO, srtf_wIO, rr_wIO
 import theme
 
-# the 5 algorithms, in table order, with their plain and _WIO modules
+# the algorithms, in table order, with their plain and _WIO modules
 ALGO_ROWS = [
     ("FCFS", fcfs, fcfs_WIO, None),
     ("SJF",  sjf,  sjf_WIO,  None),
     ("SRTF", srtf, srtf_wIO, None),
     ("RR",   rr,   rr_wIO,   2),       # RR needs a time quantum
-    ("Priority", priority, priority_WIO, None),
 ]
 
 class ComparisonFrame(tk.Frame):
@@ -41,18 +40,23 @@ class ComparisonFrame(tk.Frame):
         card, body = theme.section_card(left, "Processes", theme.HEADER_BLUE)
         card.pack(fill="x")
 
-        cols = ("PID", "AT", "BT", "Priority", "IOat", "IOdur")
-        self.tree = ttk.Treeview(body, columns=cols, show="headings", height=7)
-        headings = {"PID": "PID", "AT": "AT", "BT": "BT", "Priority": "Priority",
+        cols = ("PID", "AT", "BT", "IOat", "IOdur")
+        holder = tk.Frame(body, bg=theme.CARD_BG)
+        holder.pack(fill="x")
+        self.tree = ttk.Treeview(holder, columns=cols, show="headings", height=7)
+        bar = ttk.Scrollbar(holder, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=bar.set)
+        self.tree.pack(side="left", fill="x", expand=True)
+        bar.pack(side="left", fill="y")
+
+        headings = {"PID": "PID", "AT": "AT", "BT": "BT",
                     "IOat": "I/O at", "IOdur": "I/O dur"}
         for c in cols:
             self.tree.heading(c, text=headings[c])
-            self.tree.column(c, width=68, anchor="center")
-        self.tree.pack(fill="x")
-        theme.attach_cell_editor(self.tree, cols)
+            self.tree.column(c, width=72, anchor="center")
+        theme.attach_cell_editor(self.tree, cols, on_change=self._sort_rows)
 
-        for row in [("P1", 0, 5, 2, 2, 2), ("P2", 1, 3, 1, 1, 2),
-                    ("P3", 2, 4, 3, 2, 1)]:
+        for row in [("P1", 0, 5, 2, 2), ("P2", 1, 3, 1, 2), ("P3", 2, 4, 2, 1)]:
             self.tree.insert("", "end", values=row)
 
         btns = tk.Frame(body, bg=theme.CARD_BG)
@@ -103,37 +107,53 @@ class ComparisonFrame(tk.Frame):
 
         self._on_mode_change()
 
-    # show the Priority / I/O columns only when they are needed
+    # show the I/O columns only when they are needed
     def _on_mode_change(self):
         with_io = self.mode_var.get() == "With I/O"
-        shown = ["PID", "AT", "BT", "Priority"]      # Priority always shown here
+        shown = ["PID", "AT", "BT"]
         if with_io:
             shown += ["IOat", "IOdur"]
         self.tree["displaycolumns"] = shown
 
     def _add_process(self):
         n = len(self.tree.get_children()) + 1
-        self.tree.insert("", "end", values=("P%d" % n, 0, 1, 1, 1, 1))
+        self.tree.insert("", "end", values=("P%d" % n, 0, 1, 1, 1))
+        self._sort_rows()
 
     def _remove_process(self):
         items = self.tree.get_children()
         if items:
             self.tree.delete(items[-1])
 
-    # read the table into a list of dicts (always include priority + I/O fields)
+    # put the table rows in arrival-time order
+    def _sort_rows(self):
+        rows = [self.tree.item(i, "values") for i in self.tree.get_children()]
+
+        def key(v):
+            try:
+                return int(v[1])
+            except ValueError:
+                return 10 ** 9
+        rows.sort(key=key)
+
+        self.tree.delete(*self.tree.get_children())
+        for v in rows:
+            self.tree.insert("", "end", values=v)
+
+    # read the table into a list of dicts
     def _read_processes(self, with_io):
         procs = []
         for item in self.tree.get_children():
             v = self.tree.item(item, "values")
-            p = {"pid": str(v[0]), "at": int(v[1]), "bt": int(v[2]),
-                 "priority": int(v[3])}
+            p = {"pid": str(v[0]), "at": int(v[1]), "bt": int(v[2])}
             if with_io:
-                p["io_at"] = int(v[4])
-                p["io_dur"] = int(v[5])
+                p["io_at"] = int(v[3])
+                p["io_dur"] = int(v[4])
             procs.append(p)
         return procs
 
     def _compare(self):
+        self._sort_rows()          # always compare in arrival-time order
         with_io = self.mode_var.get() == "With I/O"
 
         try:
@@ -145,6 +165,15 @@ class ComparisonFrame(tk.Frame):
         if not procs:
             messagebox.showinfo("No processes", "Add at least one process.")
             return
+
+        if with_io:
+            for p in procs:
+                if p["io_at"] >= p["bt"]:
+                    messagebox.showerror(
+                        "Invalid I/O",
+                        "%s: I/O at (%d) must be smaller than Burst Time (%d)."
+                        % (p["pid"], p["io_at"], p["bt"]))
+                    return
 
         # run every algorithm on the SAME input and fill its row
         for name, plain_mod, wio_mod, tq in ALGO_ROWS:

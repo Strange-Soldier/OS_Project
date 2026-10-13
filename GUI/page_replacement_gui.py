@@ -34,20 +34,13 @@ class PageReplacementFrame(tk.Frame):
     # Build the screen
     # =====================================================================
     def _build_ui(self):
-        tk.Label(self, text="Virtual Paging", bg=theme.APP_BG, fg=theme.TEXT,
+        tk.Label(self, text="Page Replacement", bg=theme.APP_BG, fg=theme.TEXT,
                  font=theme.FONT_TITLE).pack(anchor="w", padx=20, pady=(12, 6))
 
-        # Paging | Cache sub-tabs
-        self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True, padx=16, pady=4)
-
-        self.paging_tab = tk.Frame(self.tabs, bg=theme.APP_BG)
-        self.cache_tab = tk.Frame(self.tabs, bg=theme.APP_BG)
-        self.tabs.add(self.paging_tab, text="Paging")
-        self.tabs.add(self.cache_tab, text="Cache")
-
-        self._build_paging(self.paging_tab)
-        self._build_cache_placeholder(self.cache_tab)
+        # the whole screen is the paging view (Cache has its own tab now)
+        page = tk.Frame(self, bg=theme.APP_BG)
+        page.pack(fill="both", expand=True, padx=16, pady=4)
+        self._build_paging(page)
 
     def _build_paging(self, tab):
         # ---- left controls ----
@@ -128,7 +121,7 @@ class PageReplacementFrame(tk.Frame):
         card, body = theme.section_card(lower, "Statistics", theme.HEADER_PURPLE)
         card.pack(side="left", fill="y", padx=(6, 0))
         self.stat_vars = {}
-        for name in ["Page hits", "Page faults", "Hit ratio"]:
+        for name in ["Page hits", "Page faults", "Hit ratio", "Miss ratio"]:
             row = tk.Frame(body, bg=theme.CARD_BG)
             row.pack(fill="x", pady=3)
             tk.Label(row, text=name + " :", bg=theme.CARD_BG, fg=theme.TEXT,
@@ -142,10 +135,6 @@ class PageReplacementFrame(tk.Frame):
         self.playback = theme.PlaybackBar(tab, on_render=self._render_snapshot,
                                           make_label=self._snapshot_label)
         self.playback.pack(fill="x", pady=10)
-
-    def _build_cache_placeholder(self, tab):
-        tk.Label(tab, text="Cache simulation coming soon.", bg=theme.APP_BG,
-                 fg=theme.MUTED, font=theme.FONT_HEADER).pack(expand=True)
 
     # =====================================================================
     # Run + playback
@@ -199,10 +188,11 @@ class PageReplacementFrame(tk.Frame):
         # build the (empty) frames grid once, then fill it while scrubbing
         self._build_grid(pages)
 
-        # statistics
+        # statistics (miss ratio is just the rest of 100%)
         self.stat_vars["Page hits"].set(self.result["hits"])
         self.stat_vars["Page faults"].set(self.result["faults"])
         self.stat_vars["Hit ratio"].set("%s %%" % self.result["hit_ratio"])
+        self.stat_vars["Miss ratio"].set("%s %%" % round(100 - self.result["hit_ratio"], 2))
 
         # enable playback with the finished snapshot list
         self.playback.load(self.result["snapshots"])
