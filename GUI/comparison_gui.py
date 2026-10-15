@@ -210,6 +210,21 @@ class ComparisonFrame(tk.Frame):
             messagebox.showinfo("No processes", "Add at least one process.")
             return
 
+        # reject impossible values (negative times, zero/negative burst, etc.)
+        for p in procs:
+            if p["at"] < 0:
+                messagebox.showerror("Invalid input",
+                    "%s: Arrival Time cannot be negative." % p["pid"])
+                return
+            if p["bt"] < 1:
+                messagebox.showerror("Invalid input",
+                    "%s: Burst Time must be a whole number >= 1." % p["pid"])
+                return
+            if with_io and (p["io_at"] < 0 or p["io_dur"] < 0):
+                messagebox.showerror("Invalid input",
+                    "%s: I/O values cannot be negative." % p["pid"])
+                return
+
         if with_io:
             for p in procs:
                 if p["io_at"] >= p["bt"]:

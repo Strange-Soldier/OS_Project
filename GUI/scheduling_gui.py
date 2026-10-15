@@ -241,6 +241,24 @@ class SchedulingFrame(tk.Frame):
         if hasattr(self, "playback"):
             self.playback.disable()
 
+    # reject values that make no physical sense (negatives, zero burst).
+    # Returns True if every process is valid, otherwise shows an error.
+    def _validate(self, procs, with_io):
+        for p in procs:
+            if p["at"] < 0:
+                messagebox.showerror("Invalid input",
+                    "%s: Arrival Time cannot be negative." % p["pid"])
+                return False
+            if p["bt"] < 1:
+                messagebox.showerror("Invalid input",
+                    "%s: Burst Time must be a whole number >= 1." % p["pid"])
+                return False
+            if with_io and (p["io_at"] < 0 or p["io_dur"] < 0):
+                messagebox.showerror("Invalid input",
+                    "%s: I/O values cannot be negative." % p["pid"])
+                return False
+        return True
+
     def _run(self):
         self._sort_rows()        # always run in arrival-time order
 
@@ -258,6 +276,10 @@ class SchedulingFrame(tk.Frame):
             messagebox.showinfo("No processes", "Add at least one process.")
             return
 
+        # reject impossible values (negative times, zero/negative burst, etc.)
+        if not self._validate(procs, with_io):
+            return
+
         if with_io:
             for p in procs:
                 if p["io_at"] >= p["bt"]:
@@ -273,6 +295,10 @@ class SchedulingFrame(tk.Frame):
                 tq = int(self.tq_var.get())
             except ValueError:
                 tq = 2
+            if tq < 1:
+                messagebox.showerror("Invalid input",
+                                     "Time Quantum must be a whole number >= 1.")
+                return
 
         # run the algorithm once; this builds the whole snapshot list
         self.result = module.simulate(procs, tq)

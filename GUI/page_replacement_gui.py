@@ -172,13 +172,19 @@ class PageReplacementFrame(tk.Frame):
         if not pages:
             messagebox.showinfo("No pages", "Enter a reference string first.")
             return
+        if any(p < 0 for p in pages):
+            messagebox.showerror("Invalid input",
+                                 "Page numbers cannot be negative.")
+            return
 
         try:
             self.frame_size = int(self.frames_var.get())
         except ValueError:
             self.frame_size = 3
         if self.frame_size < 1:
-            self.frame_size = 1
+            messagebox.showerror("Invalid input",
+                                 "Frames must be a whole number >= 1.")
+            return
 
         module = ALGO_MODULE[self.algo_var.get()]
 
