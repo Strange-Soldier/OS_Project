@@ -98,83 +98,112 @@ def simulate(processes, time_quantum=None):
     io_at = [p["io_at"] for p in processes]
     io_dur = [p["io_dur"] for p in processes]
 
-    # work left after the I/O (second CPU burst)
-    bal = []
-    for i in range(n):
-        bal.append(bt[i] - io_at[i])
+    # Per-process remaining work for each phase.
+    rem1 = io_at.copy()                         # first CPU burst remaining
+    rem2 = [bt[i] - io_at[i] for i in range(n)]  # second CPU burst remaining
+    iorem = io_dur.copy()                       # I/O remaining
 
-    st = [0] * n
     ct = [0] * n
     tat = [0] * n
     wt = [0] * n
-    rt = [0] * n
+    rt = [-1] * n            # response time (-1 = not scheduled yet)
 
-    first_ct = [0] * n      # when the first CPU burst ends
-    new_at = [0] * n        # when the process is ready again after I/O
-    new_bt = bal.copy()     # size of the second CPU burst
+    arrived = [False] * n    # has the process entered the system?
+    in_io = [False] * n      # currently doing I/O?
+    done = [False] * n       # fully finished?
 
-    done_first = [0] * n    # finished first burst?
-    done_second = [0] * n   # finished completely?
+    run = {}                 # time -> pid on CPU
+    io = {}                  # time -> list of pids in I/O
 
-    run = {}                # time -> pid on CPU
-    io = {}                 # time -> list of pids in I/O
+    ready = []               # FCFS queue of (index, burst_number)
+    cpu = None               # (index, burst_number) holding the CPU, or None
+
+    # helper: record a completed process at the end of tick t
+    def finish(i, end):
+        ct[i] = end
+        tat[i] = ct[i] - at[i]
+        wt[i] = tat[i] - bt[i]
+        done[i] = True
 
     time = 0
     count = 0
-    queue = []
+    # safety bound so a bad input can never loop forever
+    guard = sum(bt) + sum(io_dur) + (max(at) if at else 0) + n + 5
 
-    while count < n:
+    while count < n and time <= guard:
 
-        # add newly arrived processes (still needing their first burst)
+        # ---- 1) new arrivals join the ready queue for their first burst ----
         for i in range(n):
-            if done_first[i] == 0 and at[i] <= time and i not in queue:
-                queue.append(i)
+            if not arrived[i] and at[i] <= time:
+                arrived[i] = True
+                if rem1[i] > 0:
+                    ready.append((i, 1))
+                elif iorem[i] > 0:
+                    in_io[i] = True          # no first burst -> straight to I/O
+                elif rem2[i] > 0:
+                    ready.append((i, 2))
+                else:
+                    finish(i, time); count += 1
 
-        # nobody ready -> CPU idle one tick
-        if len(queue) == 0:
-            time = time + 1
-            continue
+        # ---- 2) dispatch (non-preemptive: only when the CPU is free) ----
+        if cpu is None and ready:
+            cpu = ready.pop(0)
+            ci = cpu[0]
+            if rt[ci] == -1:
+                rt[ci] = time - at[ci]
 
-        current = queue.pop(0)
-
-        st[current] = time
-        rt[current] = st[current] - at[current]
-
-        # --- first CPU burst: run io_at ticks ---
-        for t in range(time, time + io_at[current]):
-            run[t] = pid[current]
-        time = time + io_at[current]
-
-        first_ct[current] = time
-        new_at[current] = first_ct[current] + io_dur[current]
-        done_first[current] = 1
-
-        # --- I/O: mark the process blocked during its I/O ---
-        for t in range(first_ct[current], new_at[current]):
-            if t not in io:
-                io[t] = []
-            io[t].append(pid[current])
-
-        # jump forward to when I/O is finished
-        time = new_at[current]
-
-        # bring back processes whose I/O has finished
+        # ---- 3) record what happens during THIS tick ----
+        if cpu is not None:
+            run[time] = pid[cpu[0]]
         for i in range(n):
-            if done_first[i] == 1 and done_second[i] == 0:
-                if new_at[i] <= time and i != current and i not in queue:
-                    queue.append(i)
+            if in_io[i]:
+                io.setdefault(time, []).append(pid[i])
 
-        # --- second CPU burst: run the remaining work ---
-        for t in range(time, time + new_bt[current]):
-            run[t] = pid[current]
-        time = time + new_bt[current]
+        # ---- 4) advance the CPU burst by one tick ----
+        if cpu is not None:
+            ci, bst = cpu
+            if bst == 1:
+                rem1[ci] -= 1
+            else:
+                rem2[ci] -= 1
 
-        ct[current] = time
-        tat[current] = ct[current] - at[current]
-        wt[current] = tat[current] - bt[current]
+        # ---- 5) advance every active I/O by one tick, note completions ----
+        io_finished = []
+        for i in range(n):
+            if in_io[i]:
+                iorem[i] -= 1
+                if iorem[i] == 0:
+                    io_finished.append(i)
 
-        done_second[current] = 1
-        count = count + 1
+        # ---- 6) handle a CPU burst that just finished (end of this tick) ----
+        if cpu is not None:
+            ci, bst = cpu
+            if bst == 1 and rem1[ci] == 0:
+                cpu = None
+                if iorem[ci] > 0:
+                    in_io[ci] = True          # I/O starts next tick
+                elif rem2[ci] > 0:
+                    ready.append((ci, 2))     # no I/O -> second burst
+                else:
+                    finish(ci, time + 1); count += 1
+            elif bst == 2 and rem2[ci] == 0:
+                cpu = None
+                finish(ci, time + 1); count += 1
+
+        # ---- 7) processes whose I/O just finished become ready next tick ----
+        for i in io_finished:
+            in_io[i] = False
+            if rem2[i] > 0:
+                ready.append((i, 2))
+            else:
+                finish(i, time + 1); count += 1
+
+        time = time + 1
+
+    # a process that somehow never ran gets response time 0 (not -1)
+    for i in range(n):
+        if rt[i] == -1:
+            rt[i] = 0
 
     at_d = {}; bt_d = {}; ct_d = {}; tat_d = {}; wt_d = {}; rt_d = {}
     for i in range(n):

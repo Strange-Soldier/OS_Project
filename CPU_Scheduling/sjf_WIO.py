@@ -96,88 +96,117 @@ def simulate(processes, time_quantum=None):
     io_at = [p["io_at"] for p in processes]
     io_dur = [p["io_dur"] for p in processes]
 
-    bal = []
-    for i in range(n):
-        bal.append(bt[i] - io_at[i])
+    # Per-process remaining work for each phase.
+    rem1 = io_at.copy()                         # first CPU burst remaining
+    rem2 = [bt[i] - io_at[i] for i in range(n)]  # second CPU burst remaining
+    iorem = io_dur.copy()                       # I/O remaining
 
-    st = [0] * n
     ct = [0] * n
     tat = [0] * n
     wt = [0] * n
-    rt = [0] * n
+    rt = [-1] * n            # response time (-1 = not scheduled yet)
 
-    first_ct = [0] * n
-    new_at = [0] * n
-    new_bt = bal.copy()
+    arrived = [False] * n
+    in_io = [False] * n
+    done = [False] * n
 
-    done_first = [0] * n
-    done_second = [0] * n
+    run = {}                 # time -> pid on CPU
+    io = {}                  # time -> list of pids in I/O
 
-    run = {}
-    io = {}
+    ready = []               # pool of (index, burst_number) ready to run
+    cpu = None               # (index, burst_number) holding the CPU, or None
+
+    def finish(i, end):
+        ct[i] = end
+        tat[i] = ct[i] - at[i]
+        wt[i] = tat[i] - bt[i]
+        done[i] = True
+
+    # burst length a ready entry is about to run (used to pick the shortest)
+    def burst_len(entry):
+        i, bst = entry
+        return rem1[i] if bst == 1 else rem2[i]
 
     time = 0
     count = 0
+    guard = sum(bt) + sum(io_dur) + (max(at) if at else 0) + n + 5
 
-    while count < n:
+    while count < n and time <= guard:
 
-        # 1) look for the arrived process with the shortest FIRST burst
-        small = -1
+        # ---- 1) new arrivals join the ready pool for their first burst ----
         for i in range(n):
-            if done_first[i] == 0 and at[i] <= time:
-                if small == -1:
-                    small = i
-                elif io_at[i] < io_at[small]:
-                    small = i
+            if not arrived[i] and at[i] <= time:
+                arrived[i] = True
+                if rem1[i] > 0:
+                    ready.append((i, 1))
+                elif iorem[i] > 0:
+                    in_io[i] = True
+                elif rem2[i] > 0:
+                    ready.append((i, 2))
+                else:
+                    finish(i, time); count += 1
 
-        # 2) if none, look for a process back from I/O with the shortest second burst
-        if small == -1:
-            for i in range(n):
-                if done_first[i] == 1 and done_second[i] == 0:
-                    if new_at[i] <= time:
-                        if small == -1:
-                            small = i
-                        elif new_bt[i] < new_bt[small]:
-                            small = i
+        # ---- 2) dispatch SHORTEST available burst (non-preemptive) ----
+        if cpu is None and ready:
+            # pick the entry with the smallest burst; ties -> earliest arrival
+            best = min(ready, key=lambda e: (burst_len(e), at[e[0]], e[0]))
+            ready.remove(best)
+            cpu = best
+            ci = cpu[0]
+            if rt[ci] == -1:
+                rt[ci] = time - at[ci]
 
-        # nobody ready -> CPU idle one tick
-        if small == -1:
-            time = time + 1
-            continue
+        # ---- 3) record what happens during THIS tick ----
+        if cpu is not None:
+            run[time] = pid[cpu[0]]
+        for i in range(n):
+            if in_io[i]:
+                io.setdefault(time, []).append(pid[i])
 
-        if done_first[small] == 0:
+        # ---- 4) advance the CPU burst by one tick ----
+        if cpu is not None:
+            ci, bst = cpu
+            if bst == 1:
+                rem1[ci] -= 1
+            else:
+                rem2[ci] -= 1
 
-            # --- first CPU burst ---
-            st[small] = time
-            rt[small] = st[small] - at[small]
+        # ---- 5) advance every active I/O by one tick, note completions ----
+        io_finished = []
+        for i in range(n):
+            if in_io[i]:
+                iorem[i] -= 1
+                if iorem[i] == 0:
+                    io_finished.append(i)
 
-            for t in range(time, time + io_at[small]):
-                run[t] = pid[small]
-            time = time + io_at[small]
+        # ---- 6) handle a CPU burst that just finished ----
+        if cpu is not None:
+            ci, bst = cpu
+            if bst == 1 and rem1[ci] == 0:
+                cpu = None
+                if iorem[ci] > 0:
+                    in_io[ci] = True
+                elif rem2[ci] > 0:
+                    ready.append((ci, 2))
+                else:
+                    finish(ci, time + 1); count += 1
+            elif bst == 2 and rem2[ci] == 0:
+                cpu = None
+                finish(ci, time + 1); count += 1
 
-            first_ct[small] = time
-            new_at[small] = first_ct[small] + io_dur[small]
-            done_first[small] = 1
+        # ---- 7) processes whose I/O just finished become ready next tick ----
+        for i in io_finished:
+            in_io[i] = False
+            if rem2[i] > 0:
+                ready.append((i, 2))
+            else:
+                finish(i, time + 1); count += 1
 
-            # --- I/O: process is blocked during its I/O ---
-            for t in range(first_ct[small], new_at[small]):
-                if t not in io:
-                    io[t] = []
-                io[t].append(pid[small])
+        time = time + 1
 
-        else:
-
-            # --- second CPU burst ---
-            for t in range(time, time + new_bt[small]):
-                run[t] = pid[small]
-            time = time + new_bt[small]
-
-            ct[small] = time
-            tat[small] = ct[small] - at[small]
-            wt[small] = tat[small] - bt[small]
-
-            done_second[small] = 1
-            count = count + 1
+    for i in range(n):
+        if rt[i] == -1:
+            rt[i] = 0
 
     at_d = {}; bt_d = {}; ct_d = {}; tat_d = {}; wt_d = {}; rt_d = {}
     for i in range(n):

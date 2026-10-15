@@ -86,24 +86,68 @@ class ComparisonFrame(tk.Frame):
         right.pack(side="left", fill="both", expand=True)
 
         card, body = theme.section_card(right, "All Metrics Table", theme.HEADER_PURPLE)
-        card.pack(fill="both", expand=True)
+        card.pack(fill="x")
 
-        rcols = ("Algorithm", "AvgWT", "AvgTAT", "AvgRT", "AvgCT")
-        titles = {"Algorithm": "Algorithm", "AvgWT": "Avg Waiting Time",
-                  "AvgTAT": "Avg Turnaround Time", "AvgRT": "Avg Response Time",
-                  "AvgCT": "Avg Completion Time"}
-        self.result_tree = ttk.Treeview(body, columns=rcols, show="headings",
-                                        height=6)
-        for c in rcols:
-            self.result_tree.heading(c, text=titles[c])
-            self.result_tree.column(c, width=150, anchor="center")
-        self.result_tree.pack(fill="both", expand=True)
+        # metric columns: key in the metrics dict + heading shown to the user.
+        # For every one of these, a LOWER value is better.
+        self.metric_cols = [
+            ("avg_wt",  "Avg Waiting Time"),
+            ("avg_tat", "Avg Turnaround Time"),
+            ("avg_rt",  "Avg Response Time"),
+            ("avg_ct",  "Avg Completion Time"),
+        ]
 
-        # one empty row per algorithm (filled when Compare is pressed)
-        self.row_ids = {}
-        for name, _, _, _ in ALGO_ROWS:
-            self.row_ids[name] = self.result_tree.insert(
-                "", "end", values=(name, "-", "-", "-", "-"))
+        # Build the results as a grid of Labels (not a Treeview) so individual
+        # cells can be colored to highlight the best/worst value per column.
+        grid = tk.Frame(body, bg=theme.CARD_BG)
+        grid.pack(fill="x")
+
+        headers = ["Algorithm"] + [title for _, title in self.metric_cols]
+        for col, text in enumerate(headers):
+            grid.grid_columnconfigure(col, weight=1, uniform="metric")
+            tk.Label(grid, text=text, bg=theme.HEADER_BLUE, fg=theme.TEXT,
+                     font=("Segoe UI", 9, "bold"), relief="solid", bd=1,
+                     padx=6, pady=6, wraplength=120).grid(
+                         row=0, column=col, sticky="nsew")
+
+        # one row of cells per algorithm; remember the value labels for coloring
+        self.cells = {}          # name -> list of 4 metric Labels
+        for r, (name, _, _, _) in enumerate(ALGO_ROWS, start=1):
+            tk.Label(grid, text=name, bg=theme.CARD_BG, fg=theme.TEXT,
+                     font=("Segoe UI", 10, "bold"), relief="solid", bd=1,
+                     padx=6, pady=6).grid(row=r, column=0, sticky="nsew")
+            row_cells = []
+            for col in range(len(self.metric_cols)):
+                lbl = tk.Label(grid, text="-", bg="white", fg=theme.TEXT,
+                               font=theme.FONT_NORMAL, relief="solid", bd=1,
+                               padx=6, pady=6)
+                lbl.grid(row=r, column=col + 1, sticky="nsew")
+                row_cells.append(lbl)
+            self.cells[name] = row_cells
+
+        # small legend for the highlight colors
+        legend = tk.Frame(body, bg=theme.CARD_BG)
+        legend.pack(fill="x", pady=(8, 0))
+        tk.Label(legend, text="  ", bg=theme.HIT_GREEN, relief="solid",
+                 bd=1).pack(side="left")
+        tk.Label(legend, text=" lowest (best)   ", bg=theme.CARD_BG,
+                 fg=theme.TEXT, font=theme.FONT_NORMAL).pack(side="left")
+        tk.Label(legend, text="  ", bg=theme.FAULT_RED, relief="solid",
+                 bd=1).pack(side="left")
+        tk.Label(legend, text=" highest (worst)", bg=theme.CARD_BG,
+                 fg=theme.TEXT, font=theme.FONT_NORMAL).pack(side="left")
+
+        # ---- insights panel ----
+        card, body = theme.section_card(right, "Insights", theme.HEADER_GREEN)
+        card.pack(fill="both", expand=True, pady=(10, 0))
+        self.insights = tk.Text(body, height=9, font=theme.FONT_NORMAL,
+                                bd=0, highlightthickness=0, wrap="word")
+        self.insights.pack(side="left", fill="both", expand=True)
+        ibar = ttk.Scrollbar(body, command=self.insights.yview)
+        ibar.pack(side="left", fill="y")
+        self.insights.config(yscrollcommand=ibar.set)
+        self.insights.insert("end", "Press Compare to generate insights.")
+        self.insights.config(state="disabled")
 
         self._on_mode_change()
 
@@ -175,16 +219,93 @@ class ComparisonFrame(tk.Frame):
                         % (p["pid"], p["io_at"], p["bt"]))
                     return
 
-        # run every algorithm on the SAME input and fill its row
+        # run every algorithm on the SAME input, keep each metrics dict
+        metrics_by_algo = {}          # name -> metrics dict
         for name, plain_mod, wio_mod, tq in ALGO_ROWS:
             module = wio_mod if with_io else plain_mod
             # each simulate() needs its own fresh copy of the process list
             copy = [dict(p) for p in procs]
             result = module.simulate(copy, tq)
-            m = result["metrics"]
-            self.result_tree.item(self.row_ids[name],
-                                  values=(name, m["avg_wt"], m["avg_tat"],
-                                          m["avg_rt"], m["avg_ct"]))
+            metrics_by_algo[name] = result["metrics"]
+
+        self._fill_table(metrics_by_algo)
+        self._show_insights(metrics_by_algo, with_io)
+
+    # fill the grid and color the best (lowest) and worst (highest) cell
+    # in each metric column
+    def _fill_table(self, metrics_by_algo):
+        names = [name for name, _, _, _ in ALGO_ROWS]
+
+        for ci, (key, _) in enumerate(self.metric_cols):
+            values = [metrics_by_algo[name][key] for name in names]
+            lo, hi = min(values), max(values)
+
+            for name in names:
+                val = metrics_by_algo[name][key]
+                lbl = self.cells[name][ci]
+                lbl.config(text="%g" % val)
+                # only color when there is a real spread between algorithms
+                if lo == hi:
+                    lbl.config(bg="white")
+                elif val == lo:
+                    lbl.config(bg=theme.HIT_GREEN)      # lowest = best
+                elif val == hi:
+                    lbl.config(bg=theme.FAULT_RED)      # highest = worst
+                else:
+                    lbl.config(bg="white")
+
+    # turn the numbers into short plain-English takeaways
+    def _show_insights(self, metrics_by_algo, with_io):
+        names = [name for name, _, _, _ in ALGO_ROWS]
+        lines = []
+
+        # best algorithm for each metric (lowest value wins)
+        pretty = {"avg_wt": "waiting time", "avg_tat": "turnaround time",
+                  "avg_rt": "response time", "avg_ct": "completion time"}
+        for key, _ in self.metric_cols:
+            best = min(names, key=lambda n: metrics_by_algo[n][key])
+            worst = max(names, key=lambda n: metrics_by_algo[n][key])
+            bval = metrics_by_algo[best][key]
+            wval = metrics_by_algo[worst][key]
+            if bval == wval:
+                lines.append("- Average %s is the same (%g) for every algorithm."
+                             % (pretty[key], bval))
+            else:
+                lines.append("- Lowest average %s: %s (%g); highest: %s (%g)."
+                             % (pretty[key], best, bval, worst, wval))
+
+        # overall winner: fewest "wins" ranking across WT, TAT and RT
+        score = {n: 0 for n in names}
+        for key in ("avg_wt", "avg_tat", "avg_rt"):
+            best = min(names, key=lambda n: metrics_by_algo[n][key])
+            score[best] += 1
+        top = max(names, key=lambda n: score[n])
+        if score[top] > 0:
+            lines.append("")
+            lines.append("Overall: %s looks best here, leading in %d of the "
+                         "three key metrics (WT, TAT, RT)."
+                         % (top, score[top]))
+
+        # context-switch note (fewer switches = less overhead)
+        cs = {n: metrics_by_algo[n].get("context_switches", 0) for n in names}
+        cs_lo = min(names, key=lambda n: cs[n])
+        cs_hi = max(names, key=lambda n: cs[n])
+        if cs[cs_lo] != cs[cs_hi]:
+            lines.append("- Fewest context switches: %s (%d); most: %s (%d) "
+                         "- more switches mean more scheduling overhead."
+                         % (cs_lo, cs[cs_lo], cs_hi, cs[cs_hi]))
+
+        # CPU utilisation note (I/O mode can leave the CPU idle)
+        if with_io:
+            util = {n: metrics_by_algo[n].get("cpu_util", 0) for n in names}
+            u_hi = max(names, key=lambda n: util[n])
+            lines.append("- Highest CPU utilisation: %s (%g%%)."
+                         % (u_hi, util[u_hi]))
+
+        self.insights.config(state="normal")
+        self.insights.delete("1.0", "end")
+        self.insights.insert("end", "\n".join(lines))
+        self.insights.config(state="disabled")
 
 
 # run this screen on its own

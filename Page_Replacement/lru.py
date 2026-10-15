@@ -5,37 +5,42 @@
 # frame_size = how many frames memory has
 def simulate(pages, frame_size):
 
-    frames = []        # pages in memory (least recently used at the front)
-    hits = 0           # page already in memory
-    faults = 0         # page had to be loaded
-    snapshots = []     # one record per reference, for the GUI to replay
+    # Each physical frame is a FIXED slot. We track usage order separately so
+    # the victim's slot is reused in place and the GUI frame table stays stable.
+    slots = [None] * frame_size   # fixed memory slots (None = empty)
+    recent = []                   # pages by recency (least recent first)
+    hits = 0                      # page already in memory
+    faults = 0                    # page had to be loaded
+    snapshots = []                # one record per reference, for the GUI to replay
 
     # go through every page, keeping its position t
     for t in range(len(pages)):
         p = pages[t]
 
-        if p in frames:
-            # HIT: move this page to the back (it is now most recently used)
+        if p in slots:
+            # HIT: mark this page as most recently used (move to the back)
             hits = hits + 1
-            frames.remove(p)
-            frames.append(p)
+            recent.remove(p)
+            recent.append(p)
             result = "H"
         else:
             # FAULT: page must be loaded
             faults = faults + 1
-            if len(frames) < frame_size:
-                # free frame available, just add it
-                frames.append(p)
+            if None in slots:
+                # free frame available, use the first empty slot
+                idx = slots.index(None)
+                slots[idx] = p
+                recent.append(p)
             else:
-                # full: remove the LEAST recently used (front), add new one
-                frames.pop(0)
-                frames.append(p)
+                # full: evict the LEAST recently used page, reuse ITS slot
+                victim = recent.pop(0)
+                idx = slots.index(victim)
+                slots[idx] = p
+                recent.append(p)
             result = "F"
 
-        # fixed-length copy of frames (empty slots become None)
-        row = frames.copy()
-        while len(row) < frame_size:
-            row.append(None)
+        # snapshot the fixed slots exactly as they sit (None = empty frame)
+        row = slots.copy()
 
         # save the state after handling this page
         snapshots.append({"t": t, "ref": p, "frames": row, "result": result})

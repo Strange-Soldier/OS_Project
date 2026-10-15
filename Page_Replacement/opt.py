@@ -5,32 +5,36 @@
 # to decide which page to remove.
 def simulate(pages, frame_size):
 
-    frames = []        # pages currently in memory
-    hits = 0           # page already in memory
-    faults = 0         # page had to be loaded
-    snapshots = []     # one record per reference, for the GUI to replay
+    # Each physical frame is a FIXED slot so the GUI frame table does not
+    # shuffle pages between rows when a victim is replaced in place.
+    slots = [None] * frame_size   # fixed memory slots (None = empty)
+    hits = 0                      # page already in memory
+    faults = 0                    # page had to be loaded
+    snapshots = []                # one record per reference, for the GUI to replay
 
     # go through every page by its position i
     for i in range(len(pages)):
         p = pages[i]
 
-        if p in frames:
+        if p in slots:
             # HIT: page already in memory
             hits = hits + 1
             result = "H"
         else:
             # FAULT: page must be loaded
             faults = faults + 1
-            if len(frames) < frame_size:
-                # free frame available, just add it
-                frames.append(p)
+            if None in slots:
+                # free frame available, use the first empty slot
+                idx = slots.index(None)
+                slots[idx] = p
             else:
-                # full: remove the page that is used FARTHEST in the future
+                # full: evict the page that is used FARTHEST in the future,
+                # reusing ITS slot (look only at pages still resident)
                 future = pages[i + 1:]          # pages still to come
                 farthest = -1
-                page_to_remove = frames[0]
+                page_to_remove = None
 
-                for f in frames:
+                for f in slots:
                     if f not in future:
                         # this page is never needed again -> best to remove
                         page_to_remove = f
@@ -42,14 +46,12 @@ def simulate(pages, frame_size):
                             farthest = pos
                             page_to_remove = f
 
-                frames.remove(page_to_remove)
-                frames.append(p)
+                idx = slots.index(page_to_remove)
+                slots[idx] = p
             result = "F"
 
-        # fixed-length copy of frames (empty slots become None)
-        row = frames.copy()
-        while len(row) < frame_size:
-            row.append(None)
+        # snapshot the fixed slots exactly as they sit (None = empty frame)
+        row = slots.copy()
 
         # save the state after handling this page
         snapshots.append({"t": i, "ref": p, "frames": row, "result": result})
