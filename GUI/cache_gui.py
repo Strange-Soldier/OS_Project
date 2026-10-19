@@ -43,9 +43,6 @@ class CacheFrame(tk.Frame):
         self._build_left(left)
         self._build_right(right)
 
-        self.playback = theme.PlaybackBar(self, on_render=self._render_snapshot,
-                                          make_label=self._snapshot_label)
-        self.playback.pack(fill="x", padx=16, pady=10)
 
     def _build_left(self, left):
         card, body = theme.section_card(left, "Inputs", theme.HEADER_BLUE)
@@ -105,19 +102,39 @@ class CacheFrame(tk.Frame):
                      font=("Segoe UI", 10, "bold")).pack(side="left")
 
     def _build_right(self, right):
-        # cache table: one column per reference
+        # cache table: one column per reference.
+        # The canvas is a fixed-height viewport; both scrollbars let the user
+        # reach every row/column (Set Associative can have many S#-W# rows).
         card, body = theme.section_card(right, "Cache State", theme.HEADER_YELLOW)
         card.pack(fill="x")
-        self.grid_canvas = tk.Canvas(body, bg=theme.CARD_BG, height=190,
+
+        holder = tk.Frame(body, bg=theme.CARD_BG)
+        holder.pack(fill="both", expand=True)
+        holder.grid_rowconfigure(0, weight=1)
+        holder.grid_columnconfigure(0, weight=1)
+
+        self.grid_canvas = tk.Canvas(holder, bg=theme.CARD_BG, height=190,
                                      highlightthickness=0)
-        hbar = ttk.Scrollbar(body, orient="horizontal", command=self.grid_canvas.xview)
-        self.grid_canvas.configure(xscrollcommand=hbar.set)
-        self.grid_canvas.pack(fill="x")
-        hbar.pack(fill="x")
+        vbar = ttk.Scrollbar(holder, orient="vertical", command=self.grid_canvas.yview)
+        hbar = ttk.Scrollbar(holder, orient="horizontal", command=self.grid_canvas.xview)
+        self.grid_canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+
+        self.grid_canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        hbar.grid(row=1, column=0, sticky="ew")
+
         self.grid_inner = tk.Frame(self.grid_canvas, bg=theme.CARD_BG)
         self.grid_canvas.create_window((0, 0), window=self.grid_inner, anchor="nw")
         self.grid_inner.bind("<Configure>", lambda e: self.grid_canvas.configure(
             scrollregion=self.grid_canvas.bbox("all")))
+
+        # let the mouse wheel scroll the table vertically while hovering it
+        def _on_wheel(event):
+            self.grid_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        self.grid_canvas.bind("<Enter>",
+                              lambda e: self.grid_canvas.bind_all("<MouseWheel>", _on_wheel))
+        self.grid_canvas.bind("<Leave>",
+                              lambda e: self.grid_canvas.unbind_all("<MouseWheel>"))
 
         # event log
         card, body = theme.section_card(right, "Event Log", theme.HEADER_GREEN)
@@ -127,7 +144,7 @@ class CacheFrame(tk.Frame):
         self.log.pack(fill="both", expand=True)
 
     # =====================================================================
-    # Run and playback
+    # Run and show the completed result
     # =====================================================================
     # the "lines per set" box only matters for set associative mapping
     def _on_algo_change(self):
@@ -141,8 +158,8 @@ class CacheFrame(tk.Frame):
 
     def _invalidate(self):
         self.result = None
-        if hasattr(self, "playback"):
-            self.playback.disable()
+        if hasattr(self, "grid_inner"):
+            self._clear()
 
     def _reset(self):
         self.ref_var.set("7 0 1 2 0 3 0 4 2 3")
@@ -172,6 +189,9 @@ class CacheFrame(tk.Frame):
         if not blocks:
             messagebox.showinfo("No input", "Enter a block reference string.")
             return
+        if any(block < 0 for block in blocks):
+            messagebox.showerror("Invalid input", "Block numbers cannot be negative.")
+            return
 
         try:
             self.num_lines = max(1, int(self.lines_var.get()))
@@ -200,7 +220,7 @@ class CacheFrame(tk.Frame):
         self.stats["Miss ratio"].set("%s %%" % self.result["miss_ratio"])
 
         self._build_grid(blocks)
-        self.playback.load(self.result["snapshots"])
+        self._render_final_result()
 
     # build the empty table: Block row, one row per line, Result row
     def _build_grid(self, blocks):
@@ -243,33 +263,25 @@ class CacheFrame(tk.Frame):
             return flat
         return snap["cache"]
 
-    def _snapshot_label(self, snap):
-        word = "HIT" if snap["result"] == "H" else "MISS"
-        return "t=%d : %s : block %d" % (snap["t"], word, snap["block"])
-
-    # fill the table columns up to now (only a lookup, never a re-run)
-    def _render_snapshot(self, index, snap):
+    # Fill every reference column and show the complete event log.
+    def _render_final_result(self):
         snaps = self.result["snapshots"]
 
         for col, column in enumerate(self.cells):
-            if col <= index:
-                s = snaps[col]
-                column[0].config(text=str(s["block"]), bg=theme.HEADER_BLUE)
-                values = self._cache_list(s)
-                for i in range(len(column) - 2):
-                    v = values[i] if i < len(values) else None
-                    column[1 + i].config(text="" if v is None else str(v), bg="white")
-                if s["result"] == "H":
-                    column[-1].config(text="H", bg=theme.HIT_GREEN)
-                else:
-                    column[-1].config(text="M", bg=theme.FAULT_RED)
+            s = snaps[col]
+            column[0].config(text=str(s["block"]), bg=theme.HEADER_BLUE)
+            values = self._cache_list(s)
+            for i in range(len(column) - 2):
+                v = values[i] if i < len(values) else None
+                column[1 + i].config(text="" if v is None else str(v), bg="white")
+            if s["result"] == "H":
+                column[-1].config(text="H", bg=theme.HIT_GREEN)
             else:
-                for lbl in column:
-                    lbl.config(text="", bg="white")
+                column[-1].config(text="M", bg=theme.FAULT_RED)
 
-        # event log up to now
+        # Complete event log
         text = ""
-        for i in range(index + 1):
+        for i in range(len(snaps)):
             s = snaps[i]
             word = "HIT " if s["result"] == "H" else "MISS"
             if "set" in s:

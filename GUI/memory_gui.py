@@ -46,9 +46,6 @@ class MemoryFrame(tk.Frame):
         self._build_left(left)
         self._build_right(right)
 
-        self.playback = theme.PlaybackBar(self, on_render=self._render_snapshot,
-                                          make_label=self._snapshot_label)
-        self.playback.pack(fill="x", padx=16, pady=10)
 
     def _build_left(self, left):
         card, body = theme.section_card(left, "Inputs", theme.HEADER_BLUE)
@@ -123,12 +120,16 @@ class MemoryFrame(tk.Frame):
         self.log.pack(fill="both", expand=True)
 
     # =====================================================================
-    # Run and playback
+    # Run and show the completed result
     # =====================================================================
     def _invalidate(self):
         self.result = None
-        if hasattr(self, "playback"):
-            self.playback.disable()
+        if hasattr(self, "canvas"):
+            self.canvas.delete("all")
+            self.table.delete(*self.table.get_children())
+            self._set_log("")
+            for value in self.stats.values():
+                value.set("-")
 
     def _reset(self):
         self.blocks_var.set("100 500 200 300 600")
@@ -155,7 +156,12 @@ class MemoryFrame(tk.Frame):
 
         procs = [{"pid": "P%d" % (i + 1), "size": s} for i, s in enumerate(sizes)]
 
-        # run the algorithm once; this builds the whole snapshot list
+        if any(size <= 0 for size in blocks + sizes):
+            messagebox.showerror("Invalid input", "Block and process sizes must be positive.")
+            return
+
+        # The algorithm still computes each allocation step. This screen
+        # presents the completed result all at once instead of offering playback.
         self.result = ALGOS[self.algo_var.get()].simulate(blocks, procs)
 
         self.stats["Allocated"].set(self.result["allocated"])
@@ -163,13 +169,7 @@ class MemoryFrame(tk.Frame):
         self.stats["Free memory"].set(self.result["free_left"])
         self.stats["Total memory"].set(self.result["total"])
 
-        self.playback.load(self.result["snapshots"])
-
-    def _snapshot_label(self, snap):
-        if snap["block"] is None:
-            return "t=%d : NOT ALLOCATED : %s (%d)" % (snap["t"], snap["pid"], snap["size"])
-        return "t=%d : ALLOCATED : %s (%d) -> Block %d" % (
-            snap["t"], snap["pid"], snap["size"], snap["block"] + 1)
+        self._render_final_result()
 
     def _set_log(self, text):
         self.log.config(state="normal")
@@ -177,23 +177,20 @@ class MemoryFrame(tk.Frame):
         self.log.insert("end", text)
         self.log.config(state="disabled")
 
-    # show the state after step "index" (only a lookup, never a re-run)
-    def _render_snapshot(self, index, snap):
+    # Render the final allocation and the complete event log.
+    def _render_final_result(self):
         snaps = self.result["snapshots"]
-
-        # allocation table up to now
+        final = snaps[-1]
         self.table.delete(*self.table.get_children())
         lines = ""
-        for i in range(index + 1):
-            s = snaps[i]
+        for s in snaps:
             where = "Block %d" % (s["block"] + 1) if s["block"] is not None else "-"
             self.table.insert("", "end",
                               values=(s["pid"], s["size"], where,
                                       "Allocated" if s["result"] == "OK" else "Failed"))
             lines += "t = %-2d : %-3s (%d) -> %s\n" % (s["t"], s["pid"], s["size"], where)
         self._set_log(lines)
-
-        self._draw_blocks(snap)
+        self._draw_blocks(final)
 
     # draw one bar per memory block, green part = used, grey part = free
     def _draw_blocks(self, snap):
