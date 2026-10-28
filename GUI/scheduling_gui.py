@@ -4,6 +4,7 @@
 # files. There is no scheduling math here.
 
 import os
+import queue
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -15,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fcfs, sjf, srtf, rr
 import fcfs_WIO, sjf_WIO, srtf_wIO, rr_wIO
 import theme
+import insights
 
 ALGORITHMS = ["FCFS", "SJF", "SRTF", "Round Robin"]
 
@@ -34,12 +36,20 @@ class SchedulingFrame(tk.Frame):
         super().__init__(parent, bg=theme.APP_BG)
         self.result = None          # result of the last run
         self.colors = {}            # pid -> box color
+        self.steps = []             # (start, end) tick range of every step
+        self.current_insights = []  # one explanation line per step
+        self.procs = []             # processes of the last run
+        self.algo = None            # algorithm of the last run
+        self.with_io = False        # I/O mode of the last run
+        self.tq = None              # time quantum of the last run
+        self.run_id = 0             # bumped per run, so late AI replies are dropped
+        self.ai_queue = queue.Queue()   # worker thread -> main thread
+        self.ai_pending = False     # waiting for a Groq answer?
+        self.ai_polling = False     # is the queue poller already running?
         self._build_ui()
         self._on_algo_change()
 
-    # =====================================================================
-    # Build the screen
-    # =====================================================================
+
     def _build_ui(self):
         tk.Label(self, text="Process Scheduling", bg=theme.APP_BG, fg=theme.TEXT,
                  font=theme.FONT_TITLE).pack(anchor="w", padx=20, pady=(12, 6))
@@ -58,6 +68,9 @@ class SchedulingFrame(tk.Frame):
         self.playback = theme.PlaybackBar(self, on_render=self._render_snapshot,
                                           make_label=self._snapshot_label)
         self.playback.pack(fill="x", padx=16, pady=10)
+
+        # |< doubles as the reset button: rewind and empty the insights log
+        self.playback.b_first.config(command=self._reset_playback)
 
     def _build_left(self, left):
         # --- process table ---
@@ -160,11 +173,41 @@ class SchedulingFrame(tk.Frame):
                                       bd=0, highlightthickness=0)
         self.blocked_box.pack(fill="both", expand=True)
 
-        # running queue drawing (boxes in the order the CPU ran them)
+        # running queue drawing (boxes in the order the CPU ran them).
+        # fixed height, so the insights log underneath gets the leftover room.
         card, body = theme.section_card(right, "Running Queue", theme.HEADER_BLUE)
-        card.pack(fill="both", expand=True, pady=(10, 0))
+        card.pack(fill="x", pady=(10, 0))
         self.canvas = tk.Canvas(body, bg="white", height=150, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(fill="x")
+
+        # insights log: one line per step, added underneath as playback moves
+        card, body = theme.section_card(right, "Step Insights", theme.HEADER_PURPLE)
+        card.pack(fill="both", expand=True, pady=(10, 0))
+
+        holder = tk.Frame(body, bg=theme.CARD_BG)
+        holder.pack(fill="both", expand=True)
+        self.insight_text = tk.Text(holder, height=7, wrap="word", bd=0,
+                                    highlightthickness=0, bg="white",
+                                    fg=theme.TEXT, font=theme.FONT_NORMAL,
+                                    padx=8, pady=6, state="disabled",
+                                    cursor="arrow")
+        bar = ttk.Scrollbar(holder, orient="vertical",
+                            command=self.insight_text.yview)
+        self.insight_text.configure(yscrollcommand=bar.set)
+        self.insight_text.pack(side="left", fill="both", expand=True)
+        bar.pack(side="left", fill="y")
+
+        # the time stamp at the start of each line is dimmed
+        self.insight_text.tag_configure("t", foreground=theme.MUTED,
+                                        font=theme.FONT_MONO)
+        # the newest line is highlighted so the current step stands out
+        self.insight_text.tag_configure("now", background="#eef4ff",
+                                        font=("Segoe UI", 10, "bold"))
+
+        self.insight_src = tk.Label(body, text="", bg=theme.CARD_BG,
+                                    fg=theme.MUTED, font=("Segoe UI", 8),
+                                    anchor="w")
+        self.insight_src.pack(fill="x", pady=(4, 0))
 
     # =====================================================================
     # Table helpers
@@ -238,6 +281,12 @@ class SchedulingFrame(tk.Frame):
     # =====================================================================
     def _invalidate(self):
         self.result = None
+        self.steps = []
+        self.current_insights = []
+        self.ai_pending = False     # any answer still in flight is now stale
+        if hasattr(self, "insight_text"):
+            self._clear_log()
+            self.insight_src.config(text="")
         if hasattr(self, "playback"):
             self.playback.disable()
 
@@ -303,6 +352,12 @@ class SchedulingFrame(tk.Frame):
         # run the algorithm once; this builds the whole snapshot list
         self.result = module.simulate(procs, tq)
 
+        # store run details for insights
+        self.procs = procs
+        self.algo = algo
+        self.with_io = with_io
+        self.tq = tq
+
         # give each process a color for its box
         self.colors = {}
         for i, p in enumerate(procs):
@@ -314,12 +369,68 @@ class SchedulingFrame(tk.Frame):
         self.metrics["Avg RT"].set(m["avg_rt"])
         self.metrics["Avg CT"].set(m["avg_ct"])
 
-        # hand the finished snapshots to the playback bar (this turns it on)
-        self.playback.load(self.result["snapshots"])
+        # insights: the local lines are ready now, Groq wording may follow
+        self.run_id = self.run_id + 1
+        run_id = self.run_id
+
+        # the worker thread must not touch widgets, so it only drops its
+        # answer in this queue and the main thread picks it up in _poll_ai
+        def on_ai(lines, note):
+            self.ai_queue.put((run_id, lines, note))
+
+        self.steps, self.current_insights, pending = insights.build(
+            procs, self.result, algo, tq, with_io, on_ai=on_ai)
+
+        if pending:
+            self.insight_src.config(text="local explanations - asking Groq ...")
+            self.ai_pending = True
+            if not self.ai_polling:         # never stack two pollers
+                self.ai_polling = True
+                self.after(200, self._poll_ai)
+        elif insights.get_key():
+            self.insight_src.config(text="explained by Groq AI")
+        else:
+            self.insight_src.config(
+                text="local explanations (set GROQ_API_KEY in .env for AI wording)")
+
+        # one playback stop per step, not per tick: FCFS and SJF jump over the
+        # whole burst, Round Robin over one quantum, SRTF stays tick by tick.
+        stops = [self.result["snapshots"][b - 1] for a, b in self.steps]
+        self.playback.load(stops)
+
+    # look for the Groq answer; runs on the main thread, so widgets are safe
+    def _poll_ai(self):
+        while True:
+            try:
+                run_id, lines, note = self.ai_queue.get_nowait()
+            except queue.Empty:
+                break
+            if run_id != self.run_id or not self.result:
+                continue            # answer from an older run, throw it away
+
+            self.ai_pending = False
+            if lines:
+                self.current_insights = lines
+                self.insight_src.config(text="explained by Groq AI")
+                self._write_log(self.playback.index)
+            else:
+                self.insight_src.config(
+                    text="local explanations (Groq unavailable: %s)" % note)
+            break
+
+        if self.ai_pending:
+            self.after(200, self._poll_ai)      # nothing yet, look again
+        else:
+            self.ai_polling = False
 
     def _snapshot_label(self, snap):
         pid = snap["running"] if snap["running"] else "idle"
-        return "t=%d : %s : %s" % (snap["t"], snap["event"], pid)
+        i = self.playback.index if hasattr(self, "playback") else 0
+        if i < len(self.steps):
+            a, b = self.steps[i]
+            return "step %d/%d   t=%d to %d   %s" % (i + 1, len(self.steps),
+                                                     a, b, pid)
+        return "t=%d : %s" % (snap["t"], pid)
 
     # redraw everything for one snapshot (only a lookup, never a re-run)
     def _render_snapshot(self, index, snap):
@@ -333,12 +444,47 @@ class SchedulingFrame(tk.Frame):
         for pid in snap["blocked"]:
             self.blocked_box.insert("end", pid)
 
-        self._draw_queue(index)
+        self._write_log(index)
+        # draw the chart up to the end of this step
+        end = self.steps[index][1] if index < len(self.steps) else snap["t"] + 1
+        self._draw_queue(end)
 
-    # turn the snapshots up to now into boxes: one box per run, plus idle boxes
-    def _make_boxes(self, upto):
+    # =====================================================================
+    # Insights log
+    # =====================================================================
+    # The log always holds every step from the start up to the current one,
+    # so moving forward adds lines underneath and the reset button empties it.
+    def _write_log(self, upto):
+        box = self.insight_text
+        box.config(state="normal")
+        box.delete("1.0", "end")
+
+        for i in range(min(upto + 1, len(self.current_insights))):
+            a = self.steps[i][0] if i < len(self.steps) else i
+            start = box.index("end-1c")
+            box.insert("end", "%2d.  t=%-3d " % (i + 1, a), "t")
+            box.insert("end", self.current_insights[i] + "\n")
+            if i == upto:
+                box.tag_add("now", start, "end-1c")
+
+        box.config(state="disabled")
+        box.see("end")            # keep the newest line in view
+
+    def _clear_log(self):
+        box = self.insight_text
+        box.config(state="normal")
+        box.delete("1.0", "end")
+        box.config(state="disabled")
+
+    # the |< button rewinds playback and wipes the log
+    def _reset_playback(self):
+        self.playback.go_first()
+        self._clear_log()
+
+    # turn the ticks before "end" into boxes: one box per run, plus idle boxes
+    def _make_boxes(self, end):
         boxes = []
-        for i in range(upto + 1):
+        for i in range(min(end, len(self.result["snapshots"]))):
             pid = self.result["snapshots"][i]["running"]
             name = pid if pid else "idle"
             if boxes and boxes[-1][0] == name:
@@ -347,14 +493,34 @@ class SchedulingFrame(tk.Frame):
                 boxes.append([name, i, i + 1])  # new box
         return boxes
 
+    # burst still left for each box's process once that box ends.
+    # The preemptive algorithms show this under the chart, since it is what
+    # decides when the process comes back.
+    def _balance_after(self, boxes):
+        bt = {}
+        for p in self.procs:
+            bt[p["pid"]] = p["bt"]
+
+        used = {}
+        out = []
+        for name, start, end in boxes:
+            if name == "idle":
+                out.append(None)
+                continue
+            used[name] = used.get(name, 0) + (end - start)
+            out.append(bt.get(name, 0) - used[name])
+        return out
+
     # draw the running queue boxes left to right
-    def _draw_queue(self, index):
+    def _draw_queue(self, end):
         c = self.canvas
         c.delete("all")
         if not self.result:
             return
 
-        boxes = self._make_boxes(index)
+        boxes = self._make_boxes(end)
+        if not boxes:
+            return
         total = boxes[-1][2]
 
         left = 30
@@ -364,14 +530,24 @@ class SchedulingFrame(tk.Frame):
         scale = (right - left) / float(total)
         top, bottom = 35, 90
 
-        for name, start, end in boxes:
-            x1 = left + start * scale
-            x2 = left + end * scale
+        # preemptive runs give the CPU back before finishing, so show what each
+        # process still has left when its box ends
+        preemptive = self.algo in ("SRTF", "Round Robin")
+        balance = self._balance_after(boxes) if preemptive else None
+
+        for i, (name, b_start, b_end) in enumerate(boxes):
+            x1 = left + b_start * scale
+            x2 = left + b_end * scale
             color = IDLE_COLOR if name == "idle" else self.colors.get(name, "#9ec5fe")
             c.create_rectangle(x1, top, x2, bottom, fill=color, outline="#44607e")
             c.create_text((x1 + x2) / 2, (top + bottom) / 2, text=name,
                           font=("Segoe UI", 10, "bold"))
-            c.create_text(x1, bottom + 12, text=str(start), font=("Segoe UI", 8))
+            c.create_text(x1, bottom + 12, text=str(b_start), font=("Segoe UI", 8))
+
+            if balance and balance[i] is not None:
+                c.create_text((x1 + x2) / 2, bottom + 30,
+                              text=str(balance[i]),
+                              font=("Segoe UI", 11, "bold"), fill="#5a6b7c")
 
         # the time at the very end
         c.create_text(left + total * scale, bottom + 12, text=str(total),

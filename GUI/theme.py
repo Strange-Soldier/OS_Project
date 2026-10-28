@@ -8,9 +8,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-# ---------------------------------------------------------------------------
-# Colors (a light-blue theme with colored section-header strips)
-# ---------------------------------------------------------------------------
+
 APP_BG        = "#eaf1fb"   # window background
 CARD_BG       = "#ffffff"   # white cards that hold tables
 HEADER_BLUE   = "#cfe2f7"   # section header strip (blue)
