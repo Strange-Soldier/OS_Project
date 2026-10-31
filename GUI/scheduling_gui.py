@@ -161,7 +161,7 @@ class SchedulingFrame(tk.Frame):
                                     bd=0, highlightthickness=0)
         self.ready_box.pack(fill="both", expand=True)
 
-        card, body = theme.section_card(top, "Running (CPU)", theme.HEADER_YELLOW)
+        card, body = theme.section_card(top, "Currently Running Process", theme.HEADER_YELLOW)
         card.pack(side="left", fill="both", expand=True, padx=6)
         self.running_lbl = tk.Label(body, text="-", bg=theme.CARD_BG,
                                     fg=theme.TEXT, font=("Segoe UI", 16, "bold"))
@@ -177,8 +177,13 @@ class SchedulingFrame(tk.Frame):
         # fixed height, so the insights log underneath gets the leftover room.
         card, body = theme.section_card(right, "Running Queue", theme.HEADER_BLUE)
         card.pack(fill="x", pady=(10, 0))
-        self.canvas = tk.Canvas(body, bg="white", height=150, highlightthickness=0)
-        self.canvas.pack(fill="x")
+        qholder = tk.Frame(body, bg="white")
+        qholder.pack(fill="x")
+        self.canvas = tk.Canvas(qholder, bg="white", height=150, highlightthickness=0)
+        qbar = ttk.Scrollbar(qholder, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=qbar.set)
+        self.canvas.pack(side="top", fill="x")
+        qbar.pack(side="bottom", fill="x")
 
         # insights log: one line per step, added underneath as playback moves
         card, body = theme.section_card(right, "Step Insights", theme.HEADER_PURPLE)
@@ -524,10 +529,15 @@ class SchedulingFrame(tk.Frame):
         total = boxes[-1][2]
 
         left = 30
-        right = int(c.winfo_width()) - 20
-        if right < left + 50:
-            right = left + 700           # before the canvas knows its size
-        scale = (right - left) / float(total)
+        # every process box gets the same width, regardless of how long it ran.
+        # if they all fit, stretch them to fill the canvas; otherwise keep a
+        # fixed width and let the horizontal scrollbar handle the overflow.
+        MIN_BOX_W = 90
+        avail = int(c.winfo_width()) - left - 20
+        if avail < 50:
+            avail = 700                  # before the canvas knows its size
+        # half the earlier size, so the boxes sit more compactly
+        box_w = max(MIN_BOX_W, avail / float(len(boxes))) * 0.5
         top, bottom = 35, 90
 
         # preemptive runs give the CPU back before finishing, so show what each
@@ -536,8 +546,8 @@ class SchedulingFrame(tk.Frame):
         balance = self._balance_after(boxes) if preemptive else None
 
         for i, (name, b_start, b_end) in enumerate(boxes):
-            x1 = left + b_start * scale
-            x2 = left + b_end * scale
+            x1 = left + i * box_w
+            x2 = x1 + box_w
             color = IDLE_COLOR if name == "idle" else self.colors.get(name, "#9ec5fe")
             c.create_rectangle(x1, top, x2, bottom, fill=color, outline="#44607e")
             c.create_text((x1 + x2) / 2, (top + bottom) / 2, text=name,
@@ -550,8 +560,11 @@ class SchedulingFrame(tk.Frame):
                               font=("Segoe UI", 11, "bold"), fill="#5a6b7c")
 
         # the time at the very end
-        c.create_text(left + total * scale, bottom + 12, text=str(total),
-                      font=("Segoe UI", 8))
+        end_x = left + len(boxes) * box_w
+        c.create_text(end_x, bottom + 12, text=str(total), font=("Segoe UI", 8))
+
+        # let the scrollbar reach every box when they overflow the canvas
+        c.configure(scrollregion=(0, 0, end_x + 20, int(c["height"])))
 
 
 if __name__ == "__main__":
