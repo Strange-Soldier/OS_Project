@@ -529,15 +529,12 @@ class SchedulingFrame(tk.Frame):
         total = boxes[-1][2]
 
         left = 30
-        # every process box gets the same width, regardless of how long it ran.
-        # if they all fit, stretch them to fill the canvas; otherwise keep a
-        # fixed width and let the horizontal scrollbar handle the overflow.
-        MIN_BOX_W = 90
-        avail = int(c.winfo_width()) - left - 20
-        if avail < 50:
-            avail = 700                  # before the canvas knows its size
-        # half the earlier size, so the boxes sit more compactly
-        box_w = max(MIN_BOX_W, avail / float(len(boxes))) * 0.5
+        # boxes are drawn to a fixed time scale: each unit of time is UNIT_PX
+        # pixels wide. So a box's width is purely (ticks it ran x UNIT_PX) --
+        # a process that ran twice as long is twice as wide, and already-drawn
+        # boxes never change size as new ones get appended. When the chart runs
+        # past the canvas edge the horizontal scrollbar takes over.
+        UNIT_PX = 70
         top, bottom = 35, 90
 
         # preemptive runs give the CPU back before finishing, so show what each
@@ -546,8 +543,10 @@ class SchedulingFrame(tk.Frame):
         balance = self._balance_after(boxes) if preemptive else None
 
         for i, (name, b_start, b_end) in enumerate(boxes):
-            x1 = left + i * box_w
-            x2 = x1 + box_w
+            # b_start / b_end are tick positions, so the box lands at its real
+            # place on the timeline and its width scales with its duration
+            x1 = left + b_start * UNIT_PX
+            x2 = left + b_end * UNIT_PX
             color = IDLE_COLOR if name == "idle" else self.colors.get(name, "#9ec5fe")
             c.create_rectangle(x1, top, x2, bottom, fill=color, outline="#44607e")
             c.create_text((x1 + x2) / 2, (top + bottom) / 2, text=name,
@@ -560,7 +559,7 @@ class SchedulingFrame(tk.Frame):
                               font=("Segoe UI", 11, "bold"), fill="#5a6b7c")
 
         # the time at the very end
-        end_x = left + len(boxes) * box_w
+        end_x = left + total * UNIT_PX
         c.create_text(end_x, bottom + 12, text=str(total), font=("Segoe UI", 8))
 
         # let the scrollbar reach every box when they overflow the canvas
