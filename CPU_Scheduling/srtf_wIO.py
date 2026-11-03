@@ -96,6 +96,16 @@ def simulate(processes, time_quantum=None):
     io_at = [p["io_at"] for p in processes]
     io_dur = [p["io_dur"] for p in processes]
 
+    # an I/O point past the end of the burst would leave negative work in the
+    # second burst, which can never drain, so pull it back to the burst end
+    for i in range(n):
+        if io_at[i] < 0:
+            io_at[i] = 0
+        if io_at[i] > bt[i]:
+            io_at[i] = bt[i]
+        if io_dur[i] < 0:
+            io_dur[i] = 0
+
     bal = []
     for i in range(n):
         bal.append(bt[i] - io_at[i])
@@ -122,34 +132,80 @@ def simulate(processes, time_quantum=None):
 
     time = 0
     count = 0
+    last_run = -1            # who held the CPU on the previous tick
 
-    while count < n:
+    # safety bound so a bad input can never loop forever and freeze the GUI
+    guard = sum(bt) + sum(io_dur) + (max(at) if at else 0) + n + 5
 
-        # pick the process with the least remaining work it can run now
+    while count < n and time <= guard:
+
+        # --- housekeeping before the pick, so no process can be left stuck ---
+
+        # I/O at 0 means there is no first burst at all: such a process goes
+        # straight to I/O when it arrives, otherwise it is never runnable and
+        # never blocks either, and the loop spins forever waiting for it
+        for i in range(n):
+            if state[i] == 0 and at[i] <= time and first_remaining[i] == 0:
+                first_ct[i] = time
+                new_at[i] = time + io_dur[i]
+                state[i] = 1
+                for t in range(first_ct[i], new_at[i]):
+                    if t not in io:
+                        io[t] = []
+                    io[t].append(pid[i])
+
+        # move any process whose I/O has finished into the ready state
+        for i in range(n):
+            if state[i] == 1 and new_at[i] <= time:
+                state[i] = 2
+
+        # a process whose whole burst went into the first phase has no second
+        # burst left to run, so it finishes the moment its I/O is over
+        for i in range(n):
+            if state[i] == 2 and second_remaining[i] == 0:
+                ct[i] = time
+                tat[i] = ct[i] - at[i]
+                wt[i] = tat[i] - bt[i]
+                state[i] = 3
+                count = count + 1
+        if count >= n:
+            break
+
+        # Pick the process with the least work left that can run now.
+        # "Remaining time" means the work left in the whole process, first
+        # burst plus balance, not just the phase it happens to be in: a
+        # process with a short slice before its I/O can still be the longer
+        # job overall, and SRTF compares the jobs, not the slices.
         small = -1
+        best = None
         for i in range(n):
             if state[i] == 0 and at[i] <= time and first_remaining[i] > 0:
-                if small == -1:
-                    small = i
-                elif first_remaining[i] < first_remaining[small]:
-                    small = i
+                ready_since = at[i]
             elif state[i] == 2 and new_at[i] <= time and second_remaining[i] > 0:
-                if small == -1:
-                    small = i
-                elif second_remaining[i] < second_remaining[small]:
-                    small = i
+                ready_since = new_at[i]
+            else:
+                continue
 
-        # nobody ready -> CPU idle one tick, then move finished I/O to ready
+            left = first_remaining[i] + second_remaining[i]
+            # ties: stay on the process already running rather than switch for
+            # nothing, then the one that has been ready longest, then table order
+            key = (left, 0 if i == last_run else 1, ready_since, i)
+            if best is None or key < best:
+                best = key
+                small = i
+
+        # nobody ready -> CPU idle one tick; the housekeeping above releases
+        # the finished I/O on the next pass
         if small == -1:
             time = time + 1
-            for i in range(n):
-                if state[i] == 1 and new_at[i] <= time:
-                    state[i] = 2
+            last_run = -1
             continue
 
         if st[small] == -1:
             st[small] = time
             rt[small] = st[small] - at[small]
+
+        last_run = small
 
         if state[small] == 0:
 
@@ -183,10 +239,7 @@ def simulate(processes, time_quantum=None):
                 state[small] = 3
                 count = count + 1
 
-        # move any process whose I/O has finished into the ready state
-        for i in range(n):
-            if state[i] == 1 and new_at[i] <= time:
-                state[i] = 2
+        # I/O completions are picked up at the top of the next pass
 
     at_d = {}; bt_d = {}; ct_d = {}; tat_d = {}; wt_d = {}; rt_d = {}
     for i in range(n):

@@ -115,6 +115,7 @@ def simulate(processes, time_quantum=None):
 
     ready = []               # pool of (index, burst_number) ready to run
     cpu = None               # (index, burst_number) holding the CPU, or None
+    ready_at = [0] * n       # when each process last entered the ready pool
 
     def finish(i, end):
         ct[i] = end
@@ -122,10 +123,14 @@ def simulate(processes, time_quantum=None):
         wt[i] = tat[i] - bt[i]
         done[i] = True
 
-    # burst length a ready entry is about to run (used to pick the shortest)
-    def burst_len(entry):
-        i, bst = entry
-        return rem1[i] if bst == 1 else rem2[i]
+    # Work still to do, used to pick the shortest job.  A process is split by
+    # its I/O into two scheduling units, P and P', so what counts is the work
+    # left in the unit that is waiting: the whole BT for a process that has
+    # not run yet, and the balance BT for one that is back from I/O.  Adding
+    # both phases gives exactly that, because the unused phase is already 0.
+    def work_left(entry):
+        i = entry[0]
+        return rem1[i] + rem2[i]
 
     time = 0
     count = 0
@@ -137,6 +142,7 @@ def simulate(processes, time_quantum=None):
         for i in range(n):
             if not arrived[i] and at[i] <= time:
                 arrived[i] = True
+                ready_at[i] = time
                 if rem1[i] > 0:
                     ready.append((i, 1))
                 elif iorem[i] > 0:
@@ -148,8 +154,11 @@ def simulate(processes, time_quantum=None):
 
         # ---- 2) dispatch SHORTEST available burst (non-preemptive) ----
         if cpu is None and ready:
-            # pick the entry with the smallest burst; ties -> earliest arrival
-            best = min(ready, key=lambda e: (burst_len(e), at[e[0]], e[0]))
+            # smallest work left wins; on a tie the one that has been waiting
+            # longest goes first, so a unit back from I/O earlier is served
+            # before one that only just became ready
+            best = min(ready, key=lambda e: (work_left(e), ready_at[e[0]],
+                                             at[e[0]], e[0]))
             ready.remove(best)
             cpu = best
             ci = cpu[0]
@@ -187,6 +196,7 @@ def simulate(processes, time_quantum=None):
                 if iorem[ci] > 0:
                     in_io[ci] = True
                 elif rem2[ci] > 0:
+                    ready_at[ci] = time + 1
                     ready.append((ci, 2))
                 else:
                     finish(ci, time + 1); count += 1
@@ -198,6 +208,7 @@ def simulate(processes, time_quantum=None):
         for i in io_finished:
             in_io[i] = False
             if rem2[i] > 0:
+                ready_at[i] = time + 1
                 ready.append((i, 2))
             else:
                 finish(i, time + 1); count += 1

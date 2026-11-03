@@ -101,6 +101,16 @@ def simulate(processes, time_quantum=None):
     if tq is None or tq <= 0:
         tq = 2
 
+    # an I/O point past the end of the burst would leave negative work in the
+    # second burst, which can never drain, so pull it back to the burst end
+    for i in range(n):
+        if io_at[i] < 0:
+            io_at[i] = 0
+        if io_at[i] > bt[i]:
+            io_at[i] = bt[i]
+        if io_dur[i] < 0:
+            io_dur[i] = 0
+
     bal = []
     for i in range(n):
         bal.append(bt[i] - io_at[i])
@@ -129,14 +139,34 @@ def simulate(processes, time_quantum=None):
     time = 0
     count = 0
 
-    while count < n:
-
-        # add processes ready for their first burst, or back from I/O
+    # Release finished I/O and put everyone who can run at "now" on the back
+    # of the queue.  "skip" is the process holding the CPU: it is out of the
+    # queue for the length of its quantum and is put back by the caller.
+    #
+    # This has to run on every tick, not once per quantum, for two reasons.
+    # A process whose I/O ends in the middle of a quantum must join the queue
+    # at that moment, so it is served before the process that is preempted at
+    # the end of that same quantum.  And when every unfinished process is on
+    # I/O the queue is empty, so a release that only happened after a CPU
+    # slice would never happen at all and the loop would spin forever.
+    def admit(now, skip=None):
         for i in range(n):
-            if state[i] == 0 and at[i] <= time and i not in queue:
+            if state[i] == 1 and new_at[i] <= now:
+                state[i] = 2
+        for i in range(n):
+            if i == skip or i in queue:
+                continue
+            if state[i] == 0 and at[i] <= now:
                 queue.append(i)
-            elif state[i] == 2 and new_at[i] <= time and i not in queue:
+            elif state[i] == 2 and new_at[i] <= now:
                 queue.append(i)
+
+    # safety bound so a bad input can never loop forever and freeze the GUI
+    guard = sum(bt) + sum(io_dur) + (max(at) if at else 0) + n + 5
+
+    while count < n and time <= guard:
+
+        admit(time)
 
         # nobody ready -> CPU idle one tick
         if len(queue) == 0:
@@ -159,10 +189,7 @@ def simulate(processes, time_quantum=None):
                 first_remaining[current] = first_remaining[current] - 1
                 time = time + 1
                 runc = runc + 1
-                for i in range(n):
-                    if state[i] == 0 and at[i] <= time and i != current:
-                        if i not in queue:
-                            queue.append(i)
+                admit(time, current)
 
             if first_remaining[current] == 0:
                 # first burst done -> go to I/O
@@ -184,13 +211,7 @@ def simulate(processes, time_quantum=None):
                 second_remaining[current] = second_remaining[current] - 1
                 time = time + 1
                 runc = runc + 1
-                for i in range(n):
-                    if state[i] == 0 and at[i] <= time and i != current:
-                        if i not in queue:
-                            queue.append(i)
-                    if state[i] == 2 and new_at[i] <= time and i != current:
-                        if i not in queue:
-                            queue.append(i)
+                admit(time, current)
 
             if second_remaining[current] == 0:
                 ct[current] = time
@@ -201,10 +222,7 @@ def simulate(processes, time_quantum=None):
             else:
                 queue.append(current)
 
-        # move any process whose I/O has finished into the ready state
-        for i in range(n):
-            if state[i] == 1 and new_at[i] <= time:
-                state[i] = 2
+        # I/O completions are picked up at the top of the next pass
 
     at_d = {}; bt_d = {}; ct_d = {}; tat_d = {}; wt_d = {}; rt_d = {}
     for i in range(n):
